@@ -1,0 +1,60 @@
+@import url('https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600;700;800&display=swap');
+
+:root {
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --bg-gradient: linear-gradient(135deg, #f8fafc 0%, #f0f7ff 100%);
+  --surface-glass: rgba(255, 255, 255, 0.95);
+  --surface-border: rgba(59, 130, 246, 0.15);
+  --surface-hover: rgba(59, 130, 246, 0.05);
+  --text-main: #0f172a; /* Slate 900 for absolute contrast */
+  --text-muted: #334155; /* Slate 700 for readable secondary text */
+  --accent: #1d4ed8; /* Blue 700 accent for clear visibility */
+  
+  --status-new-bg: rgba(14, 165, 233, 0.15);
+  --status-new-color: #0284c7;
+  --status-active-bg: rgba(245, 158, 11, 0.2);
+  --status-active-color: #d97706;
+  --status-waiting-bg: rgba(167, 139, 250, 0.2);
+  --status-waiting-color: #7c3aed;
+  --status-urgent-bg: rgba(239, 68, 68, 0.15);
+  --status-urgent-color: #dc2626;
+  --status-done-bg: rgba(16, 185, 129, 0.15);
+  --status-done-color: #059669;
+}
+
+html, body {
+  font-family: 'Assistant', "Segoe UI", Tahoma, Arial, sans-serif;
+  background: var(--bg-gradient);
+  color: var(--text-main);
+  margin: 0;
+  min-height: 100vh;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  background-attachment: fixed;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button, input, textarea, select {
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.2);
+}
