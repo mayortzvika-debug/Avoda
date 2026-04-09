@@ -1399,7 +1399,19 @@ function App() {
                   className={showGlobalAddModal === 'bulk' ? 'tab-button active' : 'tab-button'} 
                   onClick={() => setShowGlobalAddModal('bulk')}
                 >
-                  ייבוא חכם מ-Gemini (הדבקת טקסט)
+                  ייבוא חכם (הדבקת טקסט)
+                </button>
+                <button 
+                  type="button" 
+                  className="tab-button"
+                  style={{ color: '#3b82f6', fontWeight: 600 }}
+                  onClick={() => {
+                    setShowGlobalAddModal(false)
+                    setProjectForm({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' })
+                    setShowProjectModal({ mode: 'create' })
+                  }}
+                >
+                  + נושא (תהליך) חדש
                 </button>
               </div>
             </div>
