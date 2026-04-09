@@ -149,16 +149,6 @@ function sanitizeProjects(projects: Project[]) {
 
 const INITIAL_PROJECTS: Project[] = [
   {
-    id: 'emergency',
-    name: 'חירום',
-    color: '#b91c1c',
-    tasks: [
-      { id: 'em-1', title: 'חינוך מיוחד - פעילות הפגה', dueDate: '2026-03-22', owner: UNASSIGNED_OWNER, status: 'דחוף' },
-      { id: 'em-2', title: 'בדיקת ערכות מגן', dueDate: '2026-03-24', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
-      { id: 'em-3', title: "התקנת מערכת 'תמונת מצב' מבצעית", dueDate: '2026-03-22', owner: UNASSIGNED_OWNER, status: 'דחוף' },
-    ],
-  },
-  {
     id: 'project-100',
     name: 'פרויקט ה-100',
     color: '#7c3aed',
@@ -189,6 +179,28 @@ const INITIAL_PROJECTS: Project[] = [
       { id: 'young-1', title: 'שולחנות עגולים לתרבות ופנאי', dueDate: '2026-03-24', owner: UNASSIGNED_OWNER, status: 'דחוף' },
       { id: 'young-2', title: 'קידום סקר צעירים', dueDate: '2026-03-25', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
       { id: 'young-3', title: 'תיאום עם מיכל פרויקטים', dueDate: '2026-03-25', owner: UNASSIGNED_OWNER, status: 'ממתין' },
+    ],
+  },
+  {
+    id: 'tzvika',
+    name: 'צביקה',
+    color: '#f59e0b',
+    tasks: [],
+  },
+  {
+    id: 'mayor',
+    name: 'לשכת ראש העיר',
+    color: '#10b981',
+    tasks: [],
+  },
+  {
+    id: 'emergency',
+    name: 'חירום',
+    color: '#b91c1c',
+    tasks: [
+      { id: 'em-1', title: 'חינוך מיוחד - פעילות הפגה', dueDate: '2026-03-22', owner: UNASSIGNED_OWNER, status: 'דחוף' },
+      { id: 'em-2', title: 'בדיקת ערכות מגן', dueDate: '2026-03-24', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
+      { id: 'em-3', title: "התקנת מערכת 'תמונת מצב' מבצעית", dueDate: '2026-03-22', owner: UNASSIGNED_OWNER, status: 'דחוף' },
     ],
   },
 ]
@@ -323,6 +335,7 @@ function App() {
     notes?: string
     notesUpdatedAt?: string
   } | null>(null)
+  const [showCompleted, setShowCompleted] = useState(false)
 
   useEffect(() => {
     const savedState = window.localStorage.getItem(STORAGE_KEY)
@@ -331,7 +344,20 @@ function App() {
     try {
       const parsed = JSON.parse(savedState) as PersistedState
 
-      if (parsed.projects?.length) setProjects(sanitizeProjects(parsed.projects))
+      if (parsed.projects?.length) {
+        const loadedProjects = sanitizeProjects(parsed.projects)
+        const hasTzvika = loadedProjects.some((p) => p.id === 'tzvika')
+        if (!hasTzvika) {
+          loadedProjects.push({ id: 'tzvika', name: 'צביקה', color: '#f59e0b', tasks: [] })
+          loadedProjects.push({ id: 'mayor', name: 'לשכת ראש העיר', color: '#10b981', tasks: [] })
+          const emIdx = loadedProjects.findIndex((p) => p.id === 'emergency')
+          if (emIdx !== -1) {
+            const em = loadedProjects.splice(emIdx, 1)[0]
+            loadedProjects.push(em)
+          }
+        }
+        setProjects(loadedProjects)
+      }
       if (parsed.events?.length) setEvents(parsed.events)
       if (parsed.activity?.length) setActivity(parsed.activity)
       if (parsed.googleProfile) setGoogleProfile(parsed.googleProfile)
@@ -931,6 +957,9 @@ function App() {
                     ))}
                   </select>
                 </label>
+                <button type="button" className={`ghost-button compact-action ${showCompleted ? 'active' : ''}`} onClick={() => setShowCompleted(!showCompleted)} style={{ alignSelf: 'flex-end' }}>
+                  {showCompleted ? 'הסתר בוצעו' : 'הצג בוצעו'}
+                </button>
                 <button type="button" className="ghost-button compact-action" onClick={resetBoardFocus} style={{ alignSelf: 'flex-end' }}>
                   איפוס
                 </button>
@@ -950,7 +979,7 @@ function App() {
                 </div>
 
                 <div className="task-list">
-                  {project.tasks.map((task) => {
+                  {project.tasks.filter((task) => showCompleted || task.status !== 'בוצע').map((task) => {
                     const meta = STATUS_META[normalizeTaskStatus(task.status)]
                     const isDone = task.status === 'בוצע'
 
@@ -964,7 +993,7 @@ function App() {
                             onChange={(e) => updateTaskStatus(project.id, task.id, e.target.checked ? 'בוצע' : 'חדש')}
                           />
                           <div className="task-main">
-                            <h4 style={{ textDecoration: isDone ? 'line-through' : 'none' }}>{task.title}</h4>
+                            <h4>{task.title}</h4>
                             <p>שיוך: {task.owner} | יעד: {task.dueDate}</p>
                             {task.notes && (
                               <p style={{ fontSize: '13px', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '500px' }}>
@@ -990,7 +1019,7 @@ function App() {
           ) : (
             <div className="kanban-board">
               {STATUS_ORDER.map((statusColumn) => {
-                const columnTasks = allTasks.filter(t => t.status === statusColumn && (focusedProjectId === 'all' || t.projectId === focusedProjectId))
+                const columnTasks = allTasks.filter(t => t.status === statusColumn && (focusedProjectId === 'all' || t.projectId === focusedProjectId) && (showCompleted || t.status !== 'בוצע'))
                 
                 return (
                   <div className="kanban-column" key={statusColumn}>
