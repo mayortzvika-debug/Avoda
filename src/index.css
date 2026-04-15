@@ -1,5 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600;700;800&display=swap');
 
+/* ─── Light theme (default) ───────────────────────────────────────────────── */
 :root {
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
@@ -7,10 +8,10 @@
   --surface-glass: rgba(255, 255, 255, 0.95);
   --surface-border: rgba(59, 130, 246, 0.15);
   --surface-hover: rgba(59, 130, 246, 0.05);
-  --text-main: #0f172a; /* Slate 900 for absolute contrast */
-  --text-muted: #334155; /* Slate 700 for readable secondary text */
-  --accent: #1d4ed8; /* Blue 700 accent for clear visibility */
-  
+  --text-main: #0f172a;
+  --text-muted: #334155;
+  --accent: #1d4ed8;
+
   --status-new-bg: rgba(14, 165, 233, 0.15);
   --status-new-color: #0284c7;
   --status-active-bg: rgba(245, 158, 11, 0.2);
@@ -23,8 +24,82 @@
   --status-done-color: #059669;
 }
 
-html, body {
-  font-family: 'Assistant', "Segoe UI", Tahoma, Arial, sans-serif;
+/* ─── Dark theme ───────────────────────────────────────────────────────────── */
+.dark {
+  --primary: #60a5fa;
+  --primary-hover: #3b82f6;
+  --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  --surface-glass: rgba(15, 23, 42, 0.95);
+  --surface-border: rgba(148, 163, 184, 0.12);
+  --surface-hover: rgba(148, 163, 184, 0.06);
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --accent: #93c5fd;
+
+  --status-new-bg: rgba(14, 165, 233, 0.22);
+  --status-new-color: #38bdf8;
+  --status-active-bg: rgba(245, 158, 11, 0.25);
+  --status-active-color: #fbbf24;
+  --status-waiting-bg: rgba(167, 139, 250, 0.25);
+  --status-waiting-color: #a78bfa;
+  --status-urgent-bg: rgba(239, 68, 68, 0.22);
+  --status-urgent-color: #f87171;
+  --status-done-bg: rgba(16, 185, 129, 0.22);
+  --status-done-color: #34d399;
+}
+
+/* Dark-specific component overrides */
+.dark .hero-card {
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.95) 0%, rgba(15, 23, 42, 0.9) 100%);
+}
+.dark .hero-card p,
+.dark .hero-card h2 {
+  color: var(--text-main);
+}
+.dark .tab-button.active {
+  background: rgba(30, 41, 59, 0.95);
+  color: var(--primary);
+}
+.dark .field-input {
+  background: rgba(30, 41, 59, 0.85);
+  border-color: var(--surface-border);
+  color: var(--text-main);
+}
+.dark .field-input::placeholder {
+  color: var(--text-muted);
+}
+.dark .modal-card {
+  background: rgba(15, 23, 42, 0.98);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+.dark .modal-backdrop {
+  background: rgba(0, 0, 0, 0.7);
+}
+.dark .kanban-task-card {
+  background: rgba(30, 41, 59, 0.9);
+}
+.dark .kanban-column {
+  background: rgba(15, 23, 42, 0.6);
+}
+.dark .calendar-card,
+.dark .list-card {
+  background: rgba(30, 41, 59, 0.6);
+}
+.dark .google-signin-wrap,
+.dark .info-box {
+  background: rgba(30, 41, 59, 0.7);
+}
+.dark .compact-toolbar {
+  background: rgba(30, 41, 59, 0.6);
+}
+.dark .tabbar {
+  background: rgba(15, 23, 42, 0.7);
+}
+
+/* ─── Base ────────────────────────────────────────────────────────────────── */
+html,
+body {
+  font-family: 'Assistant', 'Segoe UI', Tahoma, Arial, sans-serif;
   background: var(--bg-gradient);
   color: var(--text-main);
   margin: 0;
@@ -32,13 +107,17 @@ html, body {
   padding: 0;
   -webkit-font-smoothing: antialiased;
   background-attachment: fixed;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
 * {
   box-sizing: border-box;
 }
 
-button, input, textarea, select {
+button,
+input,
+textarea,
+select {
   font: inherit;
   color: inherit;
   outline: none;
@@ -52,9 +131,9 @@ button, input, textarea, select {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.1);
+  background: rgba(148, 163, 184, 0.2);
   border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.2);
+  background: rgba(148, 163, 184, 0.4);
 }

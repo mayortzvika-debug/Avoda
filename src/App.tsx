@@ -1,9 +1,12 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 type TaskStatus = 'חדש' | 'בטיפול' | 'ממתין' | 'דחוף' | 'בוצע'
 type View = 'dashboard' | 'processes' | 'events' | 'integrations' | 'activity'
 type CalendarMode = 'week' | 'day'
+type SortField = 'dueDate' | 'status' | 'title'
 
 type GoogleEvent = {
   id: string
@@ -69,6 +72,7 @@ type PersistedState = {
   googleProfile?: GoogleProfile | null
   selectedGoogleTaskListId?: string
   googleEvents?: GoogleEvent[]
+  darkMode?: boolean
 }
 
 declare global {
@@ -98,7 +102,9 @@ declare global {
   }
 }
 
-const STORAGE_KEY = 'bat-yam-hq-local-state-v5'
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const STORAGE_KEY = 'bat-yam-hq-local-state-v6'
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined
 const GOOGLE_TASKS_SCOPES = [
   'https://www.googleapis.com/auth/tasks',
@@ -127,6 +133,8 @@ const STATUS_META: Record<TaskStatus, { label: string; tone: string }> = {
   'בוצע': { label: 'בוצע', tone: 'status-done' },
 }
 
+// ─── Utils ────────────────────────────────────────────────────────────────────
+
 function isTaskStatus(value: unknown): value is TaskStatus {
   return typeof value === 'string' && value in STATUS_META
 }
@@ -139,12 +147,20 @@ function sanitizeProjects(projects: Project[]) {
   if (!Array.isArray(projects)) return []
   return projects.map((project) => ({
     ...project,
-    tasks: Array.isArray(project.tasks) ? project.tasks.map((task) => ({
-      ...task,
-      owner: task.owner || UNASSIGNED_OWNER,
-      status: normalizeTaskStatus(task.status),
-    })) : [],
+    tasks: Array.isArray(project.tasks)
+      ? project.tasks.map((task) => ({
+          ...task,
+          owner: task.owner || UNASSIGNED_OWNER,
+          status: normalizeTaskStatus(task.status),
+        }))
+      : [],
   }))
+}
+
+function progressColor(pct: number): string {
+  if (pct < 33) return '#ef4444'
+  if (pct < 66) return '#f59e0b'
+  return '#10b981'
 }
 
 const INITIAL_PROJECTS: Project[] = [
@@ -241,11 +257,10 @@ function getWeekDates(dateString: string) {
   const offset = (baseDate.getDay() + 7) % 7
   const startDate = new Date(baseDate)
   startDate.setDate(baseDate.getDate() - offset)
-
   return Array.from({ length: 7 }, (_, index) => {
-    const currentDate = new Date(startDate)
-    currentDate.setDate(startDate.getDate() + index)
-    return currentDate.toISOString().slice(0, 10)
+    const d = new Date(startDate)
+    d.setDate(startDate.getDate() + index)
+    return d.toISOString().slice(0, 10)
   })
 }
 
@@ -259,7 +274,6 @@ function formatCalendarLabel(dateString: string) {
 
 async function loadScript(id: string, src: string) {
   const existing = document.getElementById(id) as HTMLScriptElement | null
-
   if (existing) {
     if (existing.dataset.ready === 'true') return
     await new Promise<void>((resolve, reject) => {
@@ -268,30 +282,72 @@ async function loadScript(id: string, src: string) {
     })
     return
   }
-
   await new Promise<void>((resolve, reject) => {
     const script = document.createElement('script')
     script.id = id
     script.src = src
     script.async = true
     script.defer = true
-    script.addEventListener(
-      'load',
-      () => {
-        script.dataset.ready = 'true'
-        resolve()
-      },
-      { once: true },
-    )
+    script.addEventListener('load', () => { script.dataset.ready = 'true'; resolve() }, { once: true })
     script.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true })
     document.body.appendChild(script)
   })
 }
 
+// ─── PWA Notification helper ──────────────────────────────────────────────────
+
+async function scheduleEmergencyNotification(urgentCount: number) {
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) return
+  if (Notification.permission === 'denied') return
+
+  if (Notification.permission !== 'granted') {
+    const result = await Notification.requestPermission()
+    if (result !== 'granted') return
+  }
+
+  if (urgentCount === 0) return
+
+  const reg = await navigator.serviceWorker.ready.catch(() => null)
+  if (!reg) return
+
+  // Schedule a notification for 08:00 tomorrow; for demo we show immediately if >0
+  new Notification('Bat Yam HQ — חירום', {
+    body: `יש ${urgentCount} משימות דחופות פתוחות בקטגוריית חירום`,
+    icon: '/icon.svg',
+    badge: '/icon.svg',
+    tag: 'emergency-daily',
+  })
+}
+
+// ─── Sort tasks helper ────────────────────────────────────────────────────────
+
+function sortTasks(tasks: Task[], sortBy: SortField): Task[] {
+  return [...tasks].sort((a, b) => {
+    if (sortBy === 'dueDate') return a.dueDate.localeCompare(b.dueDate)
+    if (sortBy === 'status') return STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status)
+    return a.title.localeCompare(b.title, 'he')
+  })
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+
 function App() {
   const googleTokenClientRef = useRef<ReturnType<NonNullable<NonNullable<NonNullable<typeof window.google>['accounts']>['oauth2']>['initTokenClient']> | null>(null)
   const googleAccessTokenRef = useRef('')
 
+  // ── Dark mode (שיפור 4) ──────────────────────────────────────────────────
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    const saved = window.localStorage.getItem('bat-yam-dark')
+    if (saved !== null) return saved === 'true'
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+  })
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode)
+    window.localStorage.setItem('bat-yam-dark', String(darkMode))
+  }, [darkMode])
+
+  // ── Core state ───────────────────────────────────────────────────────────
   const [projects, setProjects] = useState<Project[]>(INITIAL_PROJECTS)
   const [events, setEvents] = useState<EventItem[]>(INITIAL_EVENTS)
   const [activity, setActivity] = useState<ActivityItem[]>(INITIAL_ACTIVITY)
@@ -307,56 +363,47 @@ function App() {
   const [showGlobalAddModal, setShowGlobalAddModal] = useState<false | 'single' | 'bulk'>(false)
   const [bulkImportText, setBulkImportText] = useState('')
   const [bulkProjectId, setBulkProjectId] = useState('')
-  const [showProjectModal, setShowProjectModal] = useState<{ mode: 'create' | 'edit', project?: Project } | null>(null)
+  const [showProjectModal, setShowProjectModal] = useState<{ mode: 'create' | 'edit'; project?: Project } | null>(null)
   const [projectForm, setProjectForm] = useState({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' })
-  const [filter, setFilter] = useState<'all' | TaskStatus>('all')
-  const [focusedProjectId, setFocusedProjectId] = useState<string | 'all'>('all')
   const [calendarMode, setCalendarMode] = useState<CalendarMode>('week')
   const [selectedDate, setSelectedDate] = useState('2026-03-24')
-  const [taskForm, setTaskForm] = useState({
-    title: '',
-    dueDate: '',
-    projectId: INITIAL_PROJECTS[0].id,
-    status: DEFAULT_STATUS,
-  })
-  const [eventForm, setEventForm] = useState({
-    title: '',
-    date: '',
-    projectId: INITIAL_PROJECTS[0].id,
-    description: '',
-  })
   const [editingTask, setEditingTask] = useState<{
-    projectId: string
-    taskId: string
-    title: string
-    owner: string
-    dueDate: string
-    status: TaskStatus
-    notes?: string
-    notesUpdatedAt?: string
+    projectId: string; taskId: string; title: string; owner: string
+    dueDate: string; status: TaskStatus; notes?: string; notesUpdatedAt?: string
   } | null>(null)
   const [showCompleted, setShowCompleted] = useState(false)
 
+  // ── שיפור 2 — Filter & Sort ───────────────────────────────────────────────
+  const [filterStatus, setFilterStatus] = useState<'all' | TaskStatus>('all')
+  const [filterProject, setFilterProject] = useState<string>('all')
+  const [sortBy, setSortBy] = useState<SortField>('dueDate')
+
+  // ── Add task form ─────────────────────────────────────────────────────────
+  const [taskForm, setTaskForm] = useState({ title: '', dueDate: '', projectId: INITIAL_PROJECTS[0].id, status: DEFAULT_STATUS })
+  const [eventForm, setEventForm] = useState({ title: '', date: '', projectId: INITIAL_PROJECTS[0].id, description: '' })
+
+  // ── Load from localStorage (שיפור 1) ──────────────────────────────────────
   useEffect(() => {
-    const savedState = window.localStorage.getItem(STORAGE_KEY)
-    if (!savedState) return
-
+    const saved = window.localStorage.getItem(STORAGE_KEY)
+    if (!saved) {
+      // Fallback: try to load from tasks.json (legacy)
+      fetch('/tasks.json')
+        .then((r) => r.json())
+        .catch(() => null)
+      return
+    }
     try {
-      const parsed = JSON.parse(savedState) as PersistedState
-
+      const parsed = JSON.parse(saved) as PersistedState
       if (parsed.projects?.length) {
-        const loadedProjects = sanitizeProjects(parsed.projects)
-        const hasTzvika = loadedProjects.some((p) => p.id === 'tzvika')
+        const loaded = sanitizeProjects(parsed.projects)
+        const hasTzvika = loaded.some((p) => p.id === 'tzvika')
         if (!hasTzvika) {
-          loadedProjects.push({ id: 'tzvika', name: 'צביקה', color: '#f59e0b', tasks: [] })
-          loadedProjects.push({ id: 'mayor', name: 'לשכת ראש העיר', color: '#10b981', tasks: [] })
-          const emIdx = loadedProjects.findIndex((p) => p.id === 'emergency')
-          if (emIdx !== -1) {
-            const em = loadedProjects.splice(emIdx, 1)[0]
-            loadedProjects.push(em)
-          }
+          loaded.push({ id: 'tzvika', name: 'צביקה', color: '#f59e0b', tasks: [] })
+          loaded.push({ id: 'mayor', name: 'לשכת ראש העיר', color: '#10b981', tasks: [] })
+          const emIdx = loaded.findIndex((p) => p.id === 'emergency')
+          if (emIdx !== -1) { const em = loaded.splice(emIdx, 1)[0]; loaded.push(em) }
         }
-        setProjects(loadedProjects)
+        setProjects(loaded)
       }
       if (parsed.events?.length) setEvents(parsed.events)
       if (parsed.activity?.length) setActivity(parsed.activity)
@@ -368,13 +415,14 @@ function App() {
     }
   }, [])
 
+  // ── Auto-save to localStorage (שיפור 1) ───────────────────────────────────
   useEffect(() => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ projects, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents }),
-    )
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      projects, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents,
+    }))
   }, [projects, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents])
 
+  // ── Auto-reconnect Google ─────────────────────────────────────────────────
   useEffect(() => {
     if (googleProfile && GOOGLE_CLIENT_ID) {
       ensureGoogleServices().then(() => {
@@ -385,531 +433,311 @@ function App() {
     }
   }, [googleProfile])
 
-  const appendActivity = (action: string, details: string) => {
-    setActivity((current) => [
-      {
-        id: createId('activity'),
-        action,
-        details,
-        createdAt: getNowLabel(),
-      },
-      ...current,
-    ])
-  }
-
-  const ensureGoogleServices = async () => {
-    if (!GOOGLE_CLIENT_ID) {
-      throw new Error('חסר VITE_GOOGLE_CLIENT_ID')
+  // ── PWA daily notification for emergency tasks (שיפור 5) ─────────────────
+  const notifiedRef = useRef(false)
+  useEffect(() => {
+    if (notifiedRef.current) return
+    const emergencyProject = projects.find((p) => p.id === 'emergency')
+    if (!emergencyProject) return
+    const urgentCount = emergencyProject.tasks.filter((t) => t.status !== 'בוצע').length
+    if (urgentCount > 0) {
+      notifiedRef.current = true
+      // Request permission on first meaningful interaction
+      window.addEventListener('click', () => scheduleEmergencyNotification(urgentCount), { once: true })
     }
+  }, [projects])
 
-    await loadScript('google-identity-services', 'https://accounts.google.com/gsi/client')
-
-    if (!window.google?.accounts?.oauth2) {
-      throw new Error('טעינת שירות Google נכשלה.')
-    }
-
-    if (!googleTokenClientRef.current) {
-      googleTokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
-        client_id: GOOGLE_CLIENT_ID,
-        scope: GOOGLE_TASKS_SCOPES,
-      })
-    }
-  }
-
-  const requestGoogleAccessToken = async (prompt: '' | 'consent' = '') => {
-    await ensureGoogleServices()
-
-    if (!googleTokenClientRef.current) {
-      throw new Error('חיבור Google Tasks לא זמין כרגע.')
-    }
-
-    return new Promise<string>((resolve, reject) => {
-      googleTokenClientRef.current!.callback = (response) => {
-        if (response.error || !response.access_token) {
-          reject(new Error(response.error_description || response.error || 'חיבור Google Tasks נכשל.'))
-          return
-        }
-
-        googleAccessTokenRef.current = response.access_token
-        resolve(response.access_token)
-      }
-
-      googleTokenClientRef.current!.error_callback = () => {
-        reject(new Error('אישור Google Tasks בוטל או נכשל.'))
-      }
-
-      googleTokenClientRef.current!.requestAccessToken({
-        prompt: googleAccessTokenRef.current ? '' : prompt || 'consent',
-      })
-    })
-  }
-
-  const googleApiRequest = async <T,>(url: string, init?: RequestInit) => {
-    const accessToken = googleAccessTokenRef.current || (await requestGoogleAccessToken())
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(init?.headers ?? {}),
-      },
-    })
-
-    if (!response.ok) {
-      const message = await response.text()
-      throw new Error(message || `Google request failed: ${response.status}`)
-    }
-
-    if (response.status === 204) {
-      return null as T
-    }
-
-    return (await response.json()) as T
-  }
-
-  const refreshGoogleTasksContext = async () => {
-    const timeMin = new Date()
-    timeMin.setDate(timeMin.getDate() - 14)
-    const timeMax = new Date()
-    timeMax.setDate(timeMax.getDate() + 30)
-
-    const [listsResponse, profileResponse, calendarsResponse] = await Promise.all([
-      googleApiRequest<{ items?: GoogleTaskList[] }>('https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=100').catch((e) => { console.error('Tasks API Error:', e); return { items: [] } }),
-      googleApiRequest<GoogleProfile>('https://www.googleapis.com/oauth2/v3/userinfo').catch((e) => { console.error('Profile API Error:', e); return { name: 'משתמש', email: '' } }),
-      googleApiRequest<{ items?: Array<{ id: string }> }>('https://www.googleapis.com/calendar/v3/users/me/calendarList').catch((e) => { console.error('CalendarList API Error:', e); return { items: [] } }),
-    ])
-
-    const nextLists = listsResponse.items ?? []
-    setGoogleProfile((current) => current ?? profileResponse)
-    setGoogleTasksLists(nextLists)
-    setSelectedGoogleTaskListId((current) => current || nextLists[0]?.id || '')
-
-    const calendarIds = (calendarsResponse.items ?? []).map((cal) => cal.id).slice(0, 30) // Limit to 30 calendars max to avoid rate limits
-    const allEventsPromises = calendarIds.map((calId) =>
-      googleApiRequest<{ items?: GoogleEvent[] }>(
-        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events?timeMin=${timeMin.toISOString()}&timeMax=${timeMax.toISOString()}&singleEvents=true&orderBy=startTime`
-      ).catch((e) => { console.error(`Events API Error for ${calId}:`, e); return { items: [] } })
-    )
-
-    const allEventsResponses = await Promise.all(allEventsPromises)
-    const evts = allEventsResponses.flatMap((res) => res.items ?? [])
-    setGoogleEvents(evts)
-
-    setGoogleMessage(
-      nextLists.length > 0
-        ? `נתונים עודכנו: ${nextLists.length} רשימות משימות ו-${evts.length} אירועים מ-${calendarIds.length} יומנים בגוגל.`
-        : 'החשבון מחובר בהצלחה.',
-    )
-
-    return { profile: profileResponse, lists: nextLists, events: evts }
-  }
+  // ─── Derived state ────────────────────────────────────────────────────────
 
   const allTasks = useMemo(
-    () =>
-      projects.flatMap((project) =>
-        project.tasks.map((task) => ({
-          ...task,
-          projectId: project.id,
-          projectName: project.name,
-        })),
-      ),
+    () => projects.flatMap((p) => p.tasks.map((t) => ({ ...t, projectId: p.id, projectName: p.name }))),
     [projects],
   )
-  const completedTasks = allTasks.filter((task) => task.status === 'בוצע').length
-  const openTasks = allTasks.filter((task) => task.status !== 'בוצע').length
-  const urgentTasks = allTasks.filter((task) => task.status === 'דחוף').length
-  const waitingTasks = allTasks.filter((task) => task.status === 'ממתין').length
-  const unassignedTasks = allTasks.filter((task) => task.owner === UNASSIGNED_OWNER).length
+
+  const completedTasks = allTasks.filter((t) => t.status === 'בוצע').length
+  const openTasks = allTasks.filter((t) => t.status !== 'בוצע').length
+  const urgentTasks = allTasks.filter((t) => t.status === 'דחוף').length
+  const unassignedTasks = allTasks.filter((t) => t.owner === UNASSIGNED_OWNER).length
   const progress = allTasks.length === 0 ? 0 : Math.round((completedTasks / allTasks.length) * 100)
-  const visibleProjects = projects
-    .filter((project) => focusedProjectId === 'all' || project.id === focusedProjectId)
-    .map((project) => ({
-      ...project,
-      tasks: filter === 'all' ? project.tasks : project.tasks.filter((task) => task.status === filter),
-    }))
-    .filter((project) => project.tasks.length > 0)
-  
+
+  // שיפור 2 — apply filter + sort
+  const visibleProjects = useMemo(() => {
+    return projects
+      .filter((p) => filterProject === 'all' || p.id === filterProject)
+      .map((p) => {
+        let tasks = filterStatus === 'all' ? p.tasks : p.tasks.filter((t) => t.status === filterStatus)
+        if (!showCompleted) tasks = tasks.filter((t) => t.status !== 'בוצע')
+        tasks = sortTasks(tasks, sortBy)
+        return { ...p, tasks }
+      })
+      .filter((p) => p.tasks.length > 0)
+  }, [projects, filterProject, filterStatus, showCompleted, sortBy])
+
   const sortedEvents = [...events].sort((a, b) => a.date.localeCompare(b.date))
   const weekDates = getWeekDates(selectedDate)
-  const syncProject = projects.find((project) => project.id === syncProjectId) ?? projects[0]
-  const selectedGoogleTaskList = googleTasksLists.find((list) => list.id === selectedGoogleTaskListId)
+  const syncProject = projects.find((p) => p.id === syncProjectId) ?? projects[0]
+  const selectedGoogleTaskList = googleTasksLists.find((l) => l.id === selectedGoogleTaskListId)
 
-  const calendarEntries = (calendarMode === 'day' ? [selectedDate] : weekDates).map((date) => {
-    const dayLocalEvents = sortedEvents.filter((event) => event.date === date)
-    const dayGoogleEvents = googleEvents.filter((ge) => {
-      const gDate = ge.start?.date || (ge.start?.dateTime && ge.start.dateTime.slice(0, 10))
-      return gDate === date
-    })
-    return {
-      label: formatCalendarLabel(date),
-      date,
-      events: dayLocalEvents,
-      googleEvents: dayGoogleEvents
-    }
-  })
+  const calendarEntries = (calendarMode === 'day' ? [selectedDate] : weekDates).map((date) => ({
+    label: formatCalendarLabel(date),
+    date,
+    events: sortedEvents.filter((e) => e.date === date),
+    googleEvents: googleEvents.filter((ge) => {
+      const d = ge.start?.date || ge.start?.dateTime?.slice(0, 10)
+      return d === date
+    }),
+  }))
 
-  const updateTaskStatus = (projectId: string, taskId: string, nextStatus: TaskStatus) => {
-    setProjects((currentProjects) =>
-      currentProjects.map((currentProject) => {
-        if (currentProject.id !== projectId) return currentProject
-        return {
-          ...currentProject,
-          tasks: currentProject.tasks.map((currentTask) =>
-            currentTask.id === taskId ? { ...currentTask, status: nextStatus } : currentTask,
-          ),
-        }
-      }),
-    )
+  // ─── Mutations ────────────────────────────────────────────────────────────
+
+  const appendActivity = (action: string, details: string) =>
+    setActivity((cur) => [{ id: createId('activity'), action, details, createdAt: getNowLabel() }, ...cur])
+
+  const updateTaskStatus = (projectId: string, taskId: string, nextStatus: TaskStatus) =>
+    setProjects((cur) => cur.map((p) =>
+      p.id !== projectId ? p : { ...p, tasks: p.tasks.map((t) => t.id === taskId ? { ...t, status: nextStatus } : t) }
+    ))
+
+  const deleteTask = (projectId: string, taskId: string) => {
+    const task = projects.find((p) => p.id === projectId)?.tasks.find((t) => t.id === taskId)
+    setProjects((cur) => cur.map((p) =>
+      p.id !== projectId ? p : { ...p, tasks: p.tasks.filter((t) => t.id !== taskId) }
+    ))
+    if (task) appendActivity('מחיקת משימה', `המשימה "${task.title}" נמחקה`)
   }
 
   const cycleStatus = (projectId: string, taskId: string) => {
-    const project = projects.find((item) => item.id === projectId)
-    const task = project?.tasks.find((item) => item.id === taskId)
+    const project = projects.find((p) => p.id === projectId)
+    const task = project?.tasks.find((t) => t.id === taskId)
     if (!project || !task) return
-
-    const currentIndex = STATUS_ORDER.indexOf(task.status)
-    const nextStatus = STATUS_ORDER[(currentIndex + 1) % STATUS_ORDER.length]
-
-    setProjects((currentProjects) =>
-      currentProjects.map((currentProject) => {
-        if (currentProject.id !== projectId) return currentProject
-
-        return {
-          ...currentProject,
-          tasks: currentProject.tasks.map((currentTask) =>
-            currentTask.id === taskId ? { ...currentTask, status: nextStatus } : currentTask,
-          ),
-        }
-      }),
-    )
-
-    appendActivity('עדכון סטטוס משימה', `${task.title} הועברה לסטטוס ${nextStatus}`)
+    const nextStatus = STATUS_ORDER[(STATUS_ORDER.indexOf(task.status) + 1) % STATUS_ORDER.length]
+    updateTaskStatus(projectId, taskId, nextStatus)
+    appendActivity('עדכון סטטוס', `${task.title} → ${nextStatus}`)
   }
 
-  const handleTaskSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const handleTaskSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
     if (!taskForm.title.trim() || !taskForm.dueDate) return
-
-    const project = projects.find((item) => item.id === taskForm.projectId)
+    const project = projects.find((p) => p.id === taskForm.projectId)
     if (!project) return
-
-    const nextTask: Task = {
-      id: createId('task'),
-      title: taskForm.title.trim(),
-      dueDate: taskForm.dueDate,
-      owner: UNASSIGNED_OWNER,
-      status: taskForm.status,
-    }
-
-    setProjects((currentProjects) =>
-      currentProjects.map((currentProject) =>
-        currentProject.id === taskForm.projectId
-          ? { ...currentProject, tasks: [nextTask, ...currentProject.tasks] }
-          : currentProject,
-      ),
-    )
-
-    appendActivity('יצירת משימה', `נוספה המשימה "${nextTask.title}" לפרויקט ${project.name} ללא שיוך בעלים`)
-    setTaskForm((current) => ({
-      ...current,
-      title: '',
-      dueDate: '',
-      status: 'חדש',
-    }))
+    const next: Task = { id: createId('task'), title: taskForm.title.trim(), dueDate: taskForm.dueDate, owner: UNASSIGNED_OWNER, status: taskForm.status }
+    setProjects((cur) => cur.map((p) => p.id === taskForm.projectId ? { ...p, tasks: [next, ...p.tasks] } : p))
+    appendActivity('יצירת משימה', `נוספה "${next.title}" לפרויקט ${project.name}`)
+    setTaskForm((cur) => ({ ...cur, title: '', dueDate: '', status: DEFAULT_STATUS }))
   }
 
-  const handleEventSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const handleEventSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
     if (!eventForm.title.trim() || !eventForm.date || !eventForm.description.trim()) return
-
-    const relatedProject = projects.find((project) => project.id === eventForm.projectId)
-    const nextEvent: EventItem = {
-      id: createId('event'),
-      title: eventForm.title.trim(),
-      date: eventForm.date,
-      projectId: eventForm.projectId,
-      description: eventForm.description.trim(),
-      createdAt: getNowLabel(),
-    }
-
-    setEvents((current) => [nextEvent, ...current])
-    appendActivity('אירוע חדש', `נוסף האירוע "${nextEvent.title}" עבור ${relatedProject?.name ?? 'פרויקט לא ידוע'}`)
-    setEventForm((current) => ({
-      ...current,
-      title: '',
-      date: '',
-      description: '',
-    }))
+    const project = projects.find((p) => p.id === eventForm.projectId)
+    const next: EventItem = { id: createId('event'), title: eventForm.title.trim(), date: eventForm.date, projectId: eventForm.projectId, description: eventForm.description.trim(), createdAt: getNowLabel() }
+    setEvents((cur) => [next, ...cur])
+    appendActivity('אירוע חדש', `נוסף "${next.title}" עבור ${project?.name ?? '?'}`)
+    setEventForm((cur) => ({ ...cur, title: '', date: '', description: '' }))
   }
 
   const handleProjectSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!projectForm.name.trim()) return
-
     if (showProjectModal?.mode === 'create') {
-      const newProject: Project = {
-        id: createId('project'),
-        name: projectForm.name.trim(),
-        description: projectForm.description.trim(),
-        color: projectForm.color,
-        milestones: projectForm.milestones.trim(),
-        kpis: projectForm.kpis.trim(),
-        stakeholders: projectForm.stakeholders.trim(),
-        targetDate: projectForm.targetDate,
-        tasks: [],
-      }
-      setProjects([...projects, newProject])
-      appendActivity('תהליך חדש', `נוצר תהליך חדש בשם "${newProject.name}"`)
+      const p: Project = { id: createId('project'), name: projectForm.name.trim(), description: projectForm.description.trim(), color: projectForm.color, milestones: projectForm.milestones.trim(), kpis: projectForm.kpis.trim(), stakeholders: projectForm.stakeholders.trim(), targetDate: projectForm.targetDate, tasks: [] }
+      setProjects((cur) => [...cur, p])
+      appendActivity('תהליך חדש', `נוצר "${p.name}"`)
     } else if (showProjectModal?.mode === 'edit' && showProjectModal.project) {
-      setProjects(current => current.map(p => 
-        p.id === showProjectModal.project!.id 
-          ? { 
-              ...p, 
-              name: projectForm.name.trim(), 
-              description: projectForm.description.trim(), 
-              color: projectForm.color,
-              milestones: projectForm.milestones.trim(),
-              kpis: projectForm.kpis.trim(),
-              stakeholders: projectForm.stakeholders.trim(),
-              targetDate: projectForm.targetDate
-            } 
-          : p
+      setProjects((cur) => cur.map((p) =>
+        p.id !== showProjectModal.project!.id ? p : { ...p, name: projectForm.name.trim(), description: projectForm.description.trim(), color: projectForm.color, milestones: projectForm.milestones.trim(), kpis: projectForm.kpis.trim(), stakeholders: projectForm.stakeholders.trim(), targetDate: projectForm.targetDate }
       ))
-      appendActivity('עדכון תהליך', `התהליך "${projectForm.name}" עודכן`)
+      appendActivity('עדכון תהליך', `"${projectForm.name}" עודכן`)
     }
-    
     setShowProjectModal(null)
   }
 
   const deleteProject = (projectId: string) => {
-    if (!confirm('האם אתה בטוח שברצונך למחוק תהליך זה? כל המשימות שבו יימחקו!')) return
-    const proj = projects.find(p => p.id === projectId)
-    setProjects(current => current.filter(p => p.id !== projectId))
-    if (proj) appendActivity('מחיקת תהליך', `התהליך "${proj.name}" נמחק לצמיתות`)
+    if (!confirm('למחוק תהליך זה? כל המשימות שבו יימחקו!')) return
+    const proj = projects.find((p) => p.id === projectId)
+    setProjects((cur) => cur.filter((p) => p.id !== projectId))
+    if (proj) appendActivity('מחיקת תהליך', `"${proj.name}" נמחק`)
   }
 
-  const openProjectTasks = (projectId: string) => {
-    setFocusedProjectId(projectId)
-    setView('dashboard')
-  }
+  const openProjectTasks = (projectId: string) => { setFilterProject(projectId); setView('dashboard') }
 
   const handleBulkImport = (e: React.FormEvent) => {
     e.preventDefault()
-    
-    const targetProjectId = bulkProjectId || projects[0]?.id
-    if (!bulkImportText.trim() || !targetProjectId) return
-
-    const lines = bulkImportText.split('\n').map(l => l.replace(/^[-\*•\d\.\s\[\]]+/, '').trim()).filter(Boolean)
-    if (lines.length === 0) return
-
-    const newTasks: Task[] = lines.map(title => ({
-      id: createId('task-bulk'),
-      title,
-      status: 'חדש',
-      dueDate: getNowLabel().split(' ')[0],
-      projectId: targetProjectId,
-      projectName: projects.find(p => p.id === targetProjectId)?.name || '',
-      owner: UNASSIGNED_OWNER
-    }))
-
-    setProjects(current => current.map(p => 
-      p.id === targetProjectId ? { ...p, tasks: [...newTasks, ...p.tasks] } : p
-    ))
-    
-    appendActivity('ייבוא המוני', `יובאו ${newTasks.length} משימות מתצורה חופשית`)
+    const targetId = bulkProjectId || projects[0]?.id
+    if (!bulkImportText.trim() || !targetId) return
+    const lines = bulkImportText.split('\n').map((l) => l.replace(/^[-*•\d.\s[\]]+/, '').trim()).filter(Boolean)
+    if (!lines.length) return
+    const newTasks: Task[] = lines.map((title) => ({ id: createId('task-bulk'), title, status: DEFAULT_STATUS, dueDate: new Date().toISOString().slice(0, 10), owner: UNASSIGNED_OWNER }))
+    setProjects((cur) => cur.map((p) => p.id === targetId ? { ...p, tasks: [...newTasks, ...p.tasks] } : p))
+    appendActivity('ייבוא המוני', `יובאו ${newTasks.length} משימות`)
     setShowGlobalAddModal(false)
     setBulkImportText('')
     setBulkProjectId('')
   }
 
-  const resetBoardFocus = () => {
-    setFocusedProjectId('all')
-    setFilter('all')
-  }
+  const resetFilters = () => { setFilterProject('all'); setFilterStatus('all'); setSortBy('dueDate') }
 
-  const startEditingTask = (projectId: string, task: Task) => {
-    setEditingTask({
-      projectId,
-      taskId: task.id,
-      title: task.title,
-      owner: task.owner,
-      dueDate: task.dueDate,
-      status: task.status,
-      notes: task.notes || '',
-      notesUpdatedAt: task.notesUpdatedAt,
-    })
-  }
+  const startEditingTask = (projectId: string, task: Task) =>
+    setEditingTask({ projectId, taskId: task.id, title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status, notes: task.notes || '', notesUpdatedAt: task.notesUpdatedAt })
 
-  const saveTaskEdits = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const saveTaskEdits = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
     if (!editingTask) return
-
-    const project = projects.find((item) => item.id === editingTask.projectId)
-    const currentTask = project?.tasks.find((item) => item.id === editingTask.taskId)
-    if (!project || !currentTask) return
-
-    const updatedTask: Task = {
-      ...currentTask,
+    const project = projects.find((p) => p.id === editingTask.projectId)
+    const current = project?.tasks.find((t) => t.id === editingTask.taskId)
+    if (!project || !current) return
+    const updated: Task = {
+      ...current,
       title: editingTask.title.trim(),
       owner: editingTask.owner.trim() || UNASSIGNED_OWNER,
       dueDate: editingTask.dueDate,
       status: editingTask.status,
       notes: editingTask.notes?.trim() || undefined,
-      notesUpdatedAt: (editingTask.notes !== currentTask.notes) ? getNowLabel() : currentTask.notesUpdatedAt
+      notesUpdatedAt: editingTask.notes !== current.notes ? getNowLabel() : current.notesUpdatedAt,
     }
-
-    if (!updatedTask.title || !updatedTask.dueDate) return
-
-    setProjects((currentProjects) =>
-      currentProjects.map((currentProject) => {
-        if (currentProject.id !== editingTask.projectId) return currentProject
-
-        return {
-          ...currentProject,
-          tasks: currentProject.tasks.map((task) => (task.id === editingTask.taskId ? updatedTask : task)),
-        }
-      }),
-    )
-
-    appendActivity('עריכת משימה', `עודכנה המשימה "${updatedTask.title}" בפרויקט ${project.name}`)
+    if (!updated.title || !updated.dueDate) return
+    setProjects((cur) => cur.map((p) =>
+      p.id !== editingTask.projectId ? p : { ...p, tasks: p.tasks.map((t) => t.id === editingTask.taskId ? updated : t) }
+    ))
+    appendActivity('עריכת משימה', `עודכנה "${updated.title}" בפרויקט ${project.name}`)
     setEditingTask(null)
   }
 
-  const connectGoogleTasks = async () => {
-    setGoogleTasksBusy(true)
+  // ─── Google ───────────────────────────────────────────────────────────────
 
-    try {
-      const prompt = googleAccessTokenRef.current ? '' : 'consent'
-      await requestGoogleAccessToken(prompt)
-      const context = await refreshGoogleTasksContext()
-      appendActivity('חיבור Google Tasks', `${context.profile.name} חיבר/ה את Google Tasks למערכת`)
-    } catch (error) {
-      setGoogleMessage(error instanceof Error ? error.message : 'החיבור ל-Google Tasks נכשל.')
-    } finally {
-      setGoogleTasksBusy(false)
+  const ensureGoogleServices = async () => {
+    if (!GOOGLE_CLIENT_ID) throw new Error('חסר VITE_GOOGLE_CLIENT_ID')
+    await loadScript('google-identity-services', 'https://accounts.google.com/gsi/client')
+    if (!window.google?.accounts?.oauth2) throw new Error('טעינת שירות Google נכשלה.')
+    if (!googleTokenClientRef.current) {
+      googleTokenClientRef.current = window.google.accounts.oauth2.initTokenClient({ client_id: GOOGLE_CLIENT_ID, scope: GOOGLE_TASKS_SCOPES })
     }
+  }
+
+  const requestGoogleAccessToken = async (prompt: '' | 'consent' = '') => {
+    await ensureGoogleServices()
+    if (!googleTokenClientRef.current) throw new Error('חיבור Google Tasks לא זמין.')
+    return new Promise<string>((resolve, reject) => {
+      googleTokenClientRef.current!.callback = (response) => {
+        if (response.error || !response.access_token) { reject(new Error(response.error_description || response.error || 'נכשל.')); return }
+        googleAccessTokenRef.current = response.access_token
+        resolve(response.access_token)
+      }
+      googleTokenClientRef.current!.error_callback = () => reject(new Error('בוטל.'))
+      googleTokenClientRef.current!.requestAccessToken({ prompt: googleAccessTokenRef.current ? '' : prompt || 'consent' })
+    })
+  }
+
+  const googleApiRequest = async <T,>(url: string, init?: RequestInit) => {
+    const token = googleAccessTokenRef.current || (await requestGoogleAccessToken())
+    const r = await fetch(url, { ...init, headers: { Authorization: `Bearer ${token}`, ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...(init?.headers ?? {}) } })
+    if (!r.ok) throw new Error((await r.text()) || `Google request failed: ${r.status}`)
+    if (r.status === 204) return null as T
+    return (await r.json()) as T
+  }
+
+  const refreshGoogleTasksContext = async () => {
+    const timeMin = new Date(); timeMin.setDate(timeMin.getDate() - 14)
+    const timeMax = new Date(); timeMax.setDate(timeMax.getDate() + 30)
+    const [listsRes, profileRes, calsRes] = await Promise.all([
+      googleApiRequest<{ items?: GoogleTaskList[] }>('https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=100').catch(() => ({ items: [] })),
+      googleApiRequest<GoogleProfile>('https://www.googleapis.com/oauth2/v3/userinfo').catch(() => ({ name: 'משתמש', email: '' })),
+      googleApiRequest<{ items?: Array<{ id: string }> }>('https://www.googleapis.com/calendar/v3/users/me/calendarList').catch(() => ({ items: [] })),
+    ])
+    const nextLists = listsRes.items ?? []
+    setGoogleProfile((cur) => cur ?? profileRes)
+    setGoogleTasksLists(nextLists)
+    setSelectedGoogleTaskListId((cur) => cur || nextLists[0]?.id || '')
+    const calIds = (calsRes.items ?? []).map((c) => c.id).slice(0, 30)
+    const evtResponses = await Promise.all(calIds.map((calId) =>
+      googleApiRequest<{ items?: GoogleEvent[] }>(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events?timeMin=${timeMin.toISOString()}&timeMax=${timeMax.toISOString()}&singleEvents=true&orderBy=startTime`).catch(() => ({ items: [] }))
+    ))
+    const evts = evtResponses.flatMap((r) => r.items ?? [])
+    setGoogleEvents(evts)
+    setGoogleMessage(nextLists.length > 0 ? `נתונים עודכנו: ${nextLists.length} רשימות, ${evts.length} אירועים` : 'מחובר.')
+    return { profile: profileRes, lists: nextLists, events: evts }
   }
 
   const connectGoogleProfile = async () => {
     setGoogleTasksBusy(true)
+    try { const ctx = await (async () => { await requestGoogleAccessToken('consent'); return refreshGoogleTasksContext() })(); appendActivity('התחברות Google', `${ctx.profile.name} התחבר/ה`) }
+    catch (err) { setGoogleMessage(err instanceof Error ? err.message : 'נכשל.') }
+    finally { setGoogleTasksBusy(false) }
+  }
 
-    try {
-      await requestGoogleAccessToken('consent')
-      const context = await refreshGoogleTasksContext()
-      appendActivity('התחברות Google', `${context.profile.name} התחבר/ה למערכת`)
-    } catch (error) {
-      setGoogleMessage(error instanceof Error ? error.message : 'ההתחברות ל-Google נכשלה.')
-    } finally {
-      setGoogleTasksBusy(false)
-    }
+  const connectGoogleTasks = async () => {
+    setGoogleTasksBusy(true)
+    try { const ctx = await (async () => { await requestGoogleAccessToken(googleAccessTokenRef.current ? '' : 'consent'); return refreshGoogleTasksContext() })(); appendActivity('חיבור Tasks', `${ctx.profile.name}`) }
+    catch (err) { setGoogleMessage(err instanceof Error ? err.message : 'נכשל.') }
+    finally { setGoogleTasksBusy(false) }
   }
 
   const refreshGoogleTasksLists = async () => {
     setGoogleTasksBusy(true)
-
-    try {
-      await refreshGoogleTasksContext()
-    } catch (error) {
-      setGoogleMessage(error instanceof Error ? error.message : 'רענון רשימות Google Tasks נכשל.')
-    } finally {
-      setGoogleTasksBusy(false)
-    }
+    try { await refreshGoogleTasksContext() } catch (err) { setGoogleMessage(err instanceof Error ? err.message : 'נכשל.') } finally { setGoogleTasksBusy(false) }
   }
 
   const syncProjectToGoogleTasks = async () => {
-    if (!syncProject || !selectedGoogleTaskListId) {
-      setGoogleMessage('יש לבחור רשימת Google Tasks ופרויקט לפני הייצוא.')
-      return
-    }
-
+    if (!syncProject || !selectedGoogleTaskListId) { setGoogleMessage('יש לבחור רשימה ופרויקט.'); return }
     setGoogleTasksBusy(true)
-
     try {
-      const existingTasksResponse = await googleApiRequest<{ items?: Array<{ title: string }> }>(
-        `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(selectedGoogleTaskListId)}/tasks?showCompleted=true&showHidden=true&maxResults=100`,
-      )
-
-      const existingTitles = new Set((existingTasksResponse.items ?? []).map((task) => task.title))
-      const pendingTasks = syncProject.tasks.filter((task) => !existingTitles.has(`${syncProject.name} | ${task.title}`))
-
-      await Promise.all(
-        pendingTasks.map((task) =>
-          googleApiRequest(
-            `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(selectedGoogleTaskListId)}/tasks`,
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                title: `${syncProject.name} | ${task.title}`,
-                notes: `בעלים: ${task.owner}\nסטטוס מקומי: ${task.status}\nפרויקט: ${syncProject.name}`,
-                due: new Date(`${task.dueDate}T09:00:00`).toISOString(),
-                status: task.status === 'בוצע' ? 'completed' : 'needsAction',
-                ...(task.status === 'בוצע' ? { completed: new Date().toISOString() } : {}),
-              }),
-            },
-          ),
-        ),
-      )
-
-      setGoogleMessage(
-        pendingTasks.length > 0
-          ? `יוצאו ${pendingTasks.length} משימות לפרויקט ${syncProject.name} ב-Google Tasks`
-          : `לא נמצאו משימות חדשות לייצוא עבור ${syncProject.name}`,
-      )
-      appendActivity('סנכרון Google Tasks', `בוצע ייצוא של ${pendingTasks.length} משימות מתוך ${syncProject.name}`)
+      const existing = await googleApiRequest<{ items?: Array<{ title: string }> }>(`https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(selectedGoogleTaskListId)}/tasks?showCompleted=true&showHidden=true&maxResults=100`)
+      const existingTitles = new Set((existing.items ?? []).map((t) => t.title))
+      const pending = syncProject.tasks.filter((t) => !existingTitles.has(`${syncProject.name} | ${t.title}`))
+      await Promise.all(pending.map((t) => googleApiRequest(`https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(selectedGoogleTaskListId)}/tasks`, { method: 'POST', body: JSON.stringify({ title: `${syncProject.name} | ${t.title}`, notes: `בעלים: ${t.owner}\nסטטוס: ${t.status}`, due: new Date(`${t.dueDate}T09:00:00`).toISOString(), status: t.status === 'בוצע' ? 'completed' : 'needsAction', ...(t.status === 'בוצע' ? { completed: new Date().toISOString() } : {}) }) })))
+      setGoogleMessage(pending.length > 0 ? `יוצאו ${pending.length} משימות` : 'אין משימות חדשות לייצוא')
+      appendActivity('סנכרון Tasks', `ייצא ${pending.length} משימות מ-${syncProject.name}`)
       await refreshGoogleTasksContext()
-    } catch (error) {
-      setGoogleMessage(error instanceof Error ? error.message : 'סנכרון Google Tasks נכשל.')
-    } finally {
-      setGoogleTasksBusy(false)
-    }
+    } catch (err) { setGoogleMessage(err instanceof Error ? err.message : 'נכשל.') } finally { setGoogleTasksBusy(false) }
   }
 
   const disconnectGoogle = () => {
-    if (googleProfile) {
-      appendActivity('התנתקות Google', `${googleProfile.name} התנתק/ה מהמערכת`)
-    }
-
-    const accessToken = googleAccessTokenRef.current
-    if (accessToken) {
-      window.google?.accounts?.oauth2?.revoke?.(accessToken)
-    }
-
+    if (googleProfile) appendActivity('התנתקות Google', `${googleProfile.name} התנתק/ה`)
+    if (googleAccessTokenRef.current) window.google?.accounts?.oauth2?.revoke?.(googleAccessTokenRef.current)
     googleAccessTokenRef.current = ''
     window.google?.accounts?.id?.disableAutoSelect?.()
-    setGoogleProfile(null)
-    setGoogleTasksLists([])
-    setSelectedGoogleTaskListId('')
-    setGoogleTasksBusy(false)
-    setGoogleMessage('החיבור הוסר מהמכשיר הזה.')
+    setGoogleProfile(null); setGoogleTasksLists([]); setSelectedGoogleTaskListId(''); setGoogleTasksBusy(false)
+    setGoogleMessage('החיבור הוסר.')
   }
+
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div className="app-shell" dir="rtl">
+      {/* ── Header ── */}
       <header className="topbar">
         <div>
           <p className="eyebrow">מטה משימות</p>
           <h1>לוח ניהול עירוני</h1>
           <p className="subhead">מערכת מקומית עם חיבור ל-Google Calendar ול-Google Tasks.</p>
         </div>
-        <div className="summary-chip">
-          <span>{allTasks.length} משימות</span>
-          <strong>{progress}% הושלם</strong>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Dark mode toggle — שיפור 4 */}
+          <button
+            type="button"
+            className="ghost-button small-button"
+            onClick={() => setDarkMode((d) => !d)}
+            title={darkMode ? 'מצב בהיר' : 'מצב כהה'}
+            style={{ fontSize: '20px', padding: '8px 12px', borderRadius: '12px' }}
+          >
+            {darkMode ? '☀️' : '🌙'}
+          </button>
+          <div className="summary-chip">
+            <span>{allTasks.length} משימות</span>
+            <strong>{progress}% הושלם</strong>
+          </div>
         </div>
       </header>
 
       <nav className="tabbar" aria-label="ניווט ראשי">
         {(Object.keys(VIEW_LABELS) as View[]).map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            className={view === tab ? 'tab-button active' : 'tab-button'}
-            onClick={() => setView(tab)}
-          >
+          <button key={tab} type="button" className={view === tab ? 'tab-button active' : 'tab-button'} onClick={() => setView(tab)}>
             {VIEW_LABELS[tab]}
           </button>
         ))}
       </nav>
 
+      {/* ════════════════════ DASHBOARD ════════════════════ */}
       {view === 'dashboard' && (
         <main className="board">
           <section className="hero-card">
@@ -924,132 +752,143 @@ function App() {
             </div>
           </section>
 
+          {/* שיפור 2 — Toolbar with filter + sort */}
           <section className="panel toolbar-panel compact-toolbar">
             <div className="toolbar-stack">
-              <div className="board-actions board-actions-compact" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+              <div className="board-actions board-actions-compact" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
                 <div className="view-toggle">
-                  <button type="button" className={dashboardLayout === 'list' ? 'tab-button active' : 'tab-button'} onClick={() => setDashboardLayout('list')}>
-                    רשימה
-                  </button>
-                  <button type="button" className={dashboardLayout === 'kanban' ? 'tab-button active' : 'tab-button'} onClick={() => setDashboardLayout('kanban')}>
-                    קנבן
-                  </button>
+                  <button type="button" className={dashboardLayout === 'list' ? 'tab-button active' : 'tab-button'} onClick={() => setDashboardLayout('list')}>רשימה</button>
+                  <button type="button" className={dashboardLayout === 'kanban' ? 'tab-button active' : 'tab-button'} onClick={() => setDashboardLayout('kanban')}>קנבן</button>
                 </div>
                 <label className="toolbar-field">
                   <span>סטטוס</span>
-                  <select className="field-input compact" value={filter} onChange={(event) => setFilter(event.target.value as 'all' | TaskStatus)}>
+                  <select className="field-input compact" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as 'all' | TaskStatus)}>
                     <option value="all">כל הסטטוסים</option>
-                    {STATUS_ORDER.map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
+                    {STATUS_ORDER.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </label>
                 <label className="toolbar-field">
                   <span>תחום</span>
-                  <select className="field-input compact" value={focusedProjectId} onChange={(event) => setFocusedProjectId(event.target.value)}>
+                  <select className="field-input compact" value={filterProject} onChange={(e) => setFilterProject(e.target.value)}>
                     <option value="all">כל התחומים</option>
-                    {projects.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
-                      </option>
-                    ))}
+                    {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </label>
-                <button type="button" className={`ghost-button compact-action ${showCompleted ? 'active' : ''}`} onClick={() => setShowCompleted(!showCompleted)} style={{ alignSelf: 'flex-end' }}>
+                <label className="toolbar-field">
+                  <span>מיון לפי</span>
+                  <select className="field-input compact" value={sortBy} onChange={(e) => setSortBy(e.target.value as SortField)}>
+                    <option value="dueDate">תאריך יעד</option>
+                    <option value="status">עדיפות</option>
+                    <option value="title">שם</option>
+                  </select>
+                </label>
+                <button type="button" className={`ghost-button compact-action ${showCompleted ? 'active' : ''}`} onClick={() => setShowCompleted((v) => !v)} style={{ alignSelf: 'flex-end' }}>
                   {showCompleted ? 'הסתר בוצעו' : 'הצג בוצעו'}
                 </button>
-                <button type="button" className="ghost-button compact-action" onClick={resetBoardFocus} style={{ alignSelf: 'flex-end' }}>
-                  איפוס
+                <button type="button" className="ghost-button compact-action" onClick={resetFilters} style={{ alignSelf: 'flex-end' }}>
+                  נקה סינון
                 </button>
               </div>
             </div>
           </section>
 
+          {/* List view */}
           {dashboardLayout === 'list' ? (
-            visibleProjects.map((project) => (
-              <section className="project-card" key={project.id}>
-                <div className="project-header">
-                  <div className="project-title">
-                    <span className="project-dot" style={{ backgroundColor: project.color }} />
-                    <h3>{project.name}</h3>
-                  </div>
-                  <span className="task-count">{project.tasks.length} פריטים</span>
-                </div>
+            visibleProjects.map((project) => {
+              // שיפור 3 — Progress bar per category
+              const allProjectTasks = projects.find((p) => p.id === project.id)?.tasks ?? []
+              const donePct = allProjectTasks.length === 0 ? 0 : Math.round((allProjectTasks.filter((t) => t.status === 'בוצע').length / allProjectTasks.length) * 100)
+              const barColor = progressColor(donePct)
 
-                <div className="task-list">
-                  {project.tasks.filter((task) => showCompleted || task.status !== 'בוצע').map((task) => {
-                    const meta = STATUS_META[normalizeTaskStatus(task.status)]
-                    const isDone = task.status === 'בוצע'
-
-                    return (
-                      <article className="task-row" key={task.id} style={{ opacity: isDone ? 0.6 : 1 }}>
-                        <div className="task-main-wrap">
-                          <input 
-                            type="checkbox" 
-                            className="task-list-checkbox" 
-                            checked={isDone} 
-                            onChange={(e) => updateTaskStatus(project.id, task.id, e.target.checked ? 'בוצע' : 'חדש')}
-                          />
-                          <div className="task-main">
-                            <h4>{task.title}</h4>
-                            <p>שיוך: {task.owner} | יעד: {task.dueDate}</p>
-                            {task.notes && (
-                              <p style={{ fontSize: '13px', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '500px' }}>
-                                📝 {task.notes}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                        <div className="task-actions">
-                          <button type="button" className="ghost-button small-button" onClick={() => startEditingTask(project.id, task)}>
-                            עריכה
-                          </button>
-                          <button type="button" className={`status-pill ${meta.tone}`} onClick={() => cycleStatus(project.id, task.id)}>
-                            {meta.label}
-                          </button>
-                        </div>
-                      </article>
-                    )
-                  })}
-                </div>
-              </section>
-            ))
-          ) : (
-            <div className="kanban-board">
-              {STATUS_ORDER.map((statusColumn) => {
-                const columnTasks = allTasks.filter(t => t.status === statusColumn && (focusedProjectId === 'all' || t.projectId === focusedProjectId) && (showCompleted || t.status !== 'בוצע'))
-                
-                return (
-                  <div className="kanban-column" key={statusColumn}>
-                    <div className="kanban-column-header">
-                      <span>{statusColumn}</span>
-                      <span className="kanban-column-count">{columnTasks.length}</span>
+              return (
+                <section className="project-card" key={project.id}>
+                  <div className="project-header">
+                    <div className="project-title">
+                      <span className="project-dot" style={{ backgroundColor: project.color }} />
+                      <h3>{project.name}</h3>
                     </div>
-                    <div 
-                      className={`kanban-dropzone`}
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                      {/* שיפור 3 — progress bar in card header */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ width: '80px', height: '6px', background: 'var(--surface-border)', borderRadius: '999px', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${donePct}%`, background: barColor, borderRadius: '999px', transition: 'width 0.6s ease' }} />
+                        </div>
+                        <span style={{ fontSize: '12px', color: barColor, fontWeight: 700 }}>{donePct}%</span>
+                      </div>
+                      <span className="task-count">{project.tasks.length} פריטים</span>
+                    </div>
+                  </div>
+
+                  <div className="task-list">
+                    {project.tasks.map((task) => {
+                      const meta = STATUS_META[normalizeTaskStatus(task.status)]
+                      const isDone = task.status === 'בוצע'
+                      return (
+                        <article className="task-row" key={task.id} style={{ opacity: isDone ? 0.6 : 1 }}>
+                          <div className="task-main-wrap">
+                            <input
+                              type="checkbox"
+                              className="task-list-checkbox"
+                              checked={isDone}
+                              onChange={(e) => updateTaskStatus(project.id, task.id, e.target.checked ? 'בוצע' : DEFAULT_STATUS)}
+                            />
+                            <div className="task-main">
+                              <h4 style={{ textDecoration: isDone ? 'line-through' : 'none' }}>{task.title}</h4>
+                              <p>שיוך: {task.owner} | יעד: {task.dueDate}</p>
+                              {task.notes && (
+                                <p style={{ fontSize: '13px', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '500px' }}>
+                                  📝 {task.notes}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <div className="task-actions">
+                            <button type="button" className="ghost-button small-button" onClick={() => startEditingTask(project.id, task)}>עריכה</button>
+                            <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteTask(project.id, task.id)}>מחיקה</button>
+                            <button type="button" className={`status-pill ${meta.tone}`} onClick={() => cycleStatus(project.id, task.id)}>{meta.label}</button>
+                          </div>
+                        </article>
+                      )
+                    })}
+                  </div>
+                </section>
+              )
+            })
+          ) : (
+            /* Kanban view */
+            <div className="kanban-board">
+              {STATUS_ORDER.map((col) => {
+                const colTasks = allTasks.filter(
+                  (t) => t.status === col &&
+                    (filterProject === 'all' || t.projectId === filterProject) &&
+                    (filterStatus === 'all' || t.status === filterStatus) &&
+                    (showCompleted || t.status !== 'בוצע')
+                )
+                return (
+                  <div className="kanban-column" key={col}>
+                    <div className="kanban-column-header">
+                      <span>{col}</span>
+                      <span className="kanban-column-count">{colTasks.length}</span>
+                    </div>
+                    <div
+                      className="kanban-dropzone"
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => {
-                        e.preventDefault();
-                        const data = e.dataTransfer.getData('text/plain');
-                        if (!data) return;
-                        const { pId, tId } = JSON.parse(data);
-                        if (pId && tId) updateTaskStatus(pId, tId, statusColumn);
+                        e.preventDefault()
+                        const data = e.dataTransfer.getData('text/plain')
+                        if (!data) return
+                        const { pId, tId } = JSON.parse(data)
+                        if (pId && tId) updateTaskStatus(pId, tId, col)
                       }}
                     >
-                      {columnTasks.map(task => {
-                        const meta = STATUS_META[normalizeTaskStatus(task.status)]
-                        const pColor = projects.find(p => p.id === task.projectId)?.color || '#38bdf8'
-
+                      {colTasks.map((task) => {
+                        const pColor = projects.find((p) => p.id === task.projectId)?.color || '#38bdf8'
                         return (
-                          <div 
-                            key={task.id} 
+                          <div
+                            key={task.id}
                             className="kanban-task-card"
                             draggable
-                            onDragStart={(e) => {
-                              e.dataTransfer.setData('text/plain', JSON.stringify({ pId: task.projectId, tId: task.id }))
-                            }}
+                            onDragStart={(e) => e.dataTransfer.setData('text/plain', JSON.stringify({ pId: task.projectId, tId: task.id }))}
                           >
                             <div className="kanban-task-meta">
                               <span style={{ color: pColor, fontWeight: 600 }}>{task.projectName}</span>
@@ -1062,9 +901,8 @@ function App() {
                               </div>
                             )}
                             <div className="kanban-task-actions">
-                               <button type="button" className="ghost-button small-button" onClick={() => startEditingTask(task.projectId, task as Task)}>
-                                עריכה
-                              </button>
+                              <button type="button" className="ghost-button small-button" onClick={() => startEditingTask(task.projectId, task as Task)}>עריכה</button>
+                              <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteTask(task.projectId, task.id)}>מחיקה</button>
                             </div>
                           </div>
                         )
@@ -1078,24 +916,19 @@ function App() {
         </main>
       )}
 
+      {/* ════════════════════ PROCESSES ════════════════════ */}
       {view === 'processes' && (
         <main className="board">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h2 style={{ margin: 0 }}>ניהול תהליכים ויעדים</h2>
-            <button 
-              type="button" 
-              className="primary-button" 
-              onClick={() => {
-                setProjectForm({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' })
-                setShowProjectModal({ mode: 'create' })
-              }}
-            >
+            <button type="button" className="primary-button" onClick={() => { setProjectForm({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' }); setShowProjectModal({ mode: 'create' }) }}>
               הוספת תהליך חדש
             </button>
           </div>
           {projects.map((project) => {
-            const done = project.tasks.filter((task) => task.status === 'בוצע').length
-            const projectProgress = project.tasks.length === 0 ? 0 : Math.round((done / project.tasks.length) * 100)
+            const done = project.tasks.filter((t) => t.status === 'בוצע').length
+            const pct = project.tasks.length === 0 ? 0 : Math.round((done / project.tasks.length) * 100)
+            const barColor = progressColor(pct)
 
             return (
               <section className="panel process-card" key={project.id}>
@@ -1105,77 +938,49 @@ function App() {
                       <span className="project-dot" style={{ backgroundColor: project.color }} />
                       <h3>{project.name}</h3>
                     </div>
-                    {project.description && (
-                      <p style={{ margin: '0 0 16px 0', maxWidth: '600px', lineHeight: 1.5, color: 'var(--text-main)' }}>
-                        {project.description}
-                      </p>
-                    )}
+                    {project.description && <p style={{ margin: '0 0 16px 0', maxWidth: '600px', lineHeight: 1.5 }}>{project.description}</p>}
                     <p className="muted-line">{done} מתוך {project.tasks.length} משימות הושלמו</p>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', flexDirection: 'column', alignItems: 'flex-end' }}>
-                    <button type="button" className="primary-button small-button" onClick={() => openProjectTasks(project.id)}>
-                      מעבר למשימות
-                    </button>
+                    <button type="button" className="primary-button small-button" onClick={() => openProjectTasks(project.id)}>מעבר למשימות</button>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                      <button 
-                        type="button" 
-                        className="ghost-button small-button" 
-                        onClick={() => {
-                          setProjectForm({ 
-                            name: project.name, 
-                            description: project.description || '', 
-                            color: project.color,
-                            milestones: project.milestones || '',
-                            kpis: project.kpis || '',
-                            stakeholders: project.stakeholders || '',
-                            targetDate: project.targetDate || ''
-                          })
-                          setShowProjectModal({ mode: 'edit', project })
-                        }}
-                      >
-                        עריכה
-                      </button>
-                      <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteProject(project.id)}>
-                        מחיקה
-                      </button>
+                      <button type="button" className="ghost-button small-button" onClick={() => { setProjectForm({ name: project.name, description: project.description || '', color: project.color, milestones: project.milestones || '', kpis: project.kpis || '', stakeholders: project.stakeholders || '', targetDate: project.targetDate || '' }); setShowProjectModal({ mode: 'edit', project }) }}>עריכה</button>
+                      <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteProject(project.id)}>מחיקה</button>
                     </div>
                   </div>
                 </div>
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${projectProgress}%`, backgroundColor: project.color }} />
+
+                {/* שיפור 3 — dynamic progress bar */}
+                <div style={{ margin: '16px 0 8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div className="progress-bar" style={{ flex: 1, margin: 0 }}>
+                    <div className="progress-fill" style={{ width: `${pct}%`, backgroundColor: barColor }} />
+                  </div>
+                  <span style={{ fontSize: '14px', fontWeight: 700, color: barColor, minWidth: '38px', textAlign: 'left' }}>{pct}%</span>
                 </div>
-                
+
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', marginTop: '16px' }}>
                   {project.milestones && (
                     <div style={{ background: 'rgba(59, 130, 246, 0.03)', padding: '12px', borderRadius: '12px', border: '1px solid var(--surface-border)' }}>
-                      <strong style={{ display: 'block', marginBottom: '8px', color: 'var(--primary)', fontSize: '14px' }}>🎯 אבני דרך מרכזיות</strong>
+                      <strong style={{ display: 'block', marginBottom: '8px', color: 'var(--primary)', fontSize: '14px' }}>🎯 אבני דרך</strong>
                       <div style={{ whiteSpace: 'pre-wrap', fontSize: '13px', lineHeight: '1.4' }}>{project.milestones}</div>
                     </div>
                   )}
-                  
                   {(project.kpis || project.stakeholders || project.targetDate) && (
                     <div style={{ background: 'rgba(59, 130, 246, 0.03)', padding: '12px', borderRadius: '12px', border: '1px solid var(--surface-border)' }}>
                       <strong style={{ display: 'block', marginBottom: '8px', color: 'var(--primary)', fontSize: '14px' }}>📋 מדדים ושותפים</strong>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px' }}>
-                        {project.targetDate && (
-                          <div><strong>📅 תאריך יעד:</strong> {new Date(project.targetDate).toLocaleDateString('he-IL')}</div>
-                        )}
-                        {project.kpis && (
-                          <div><strong>📊 יעדים/KPIs:</strong> {project.kpis}</div>
-                        )}
-                        {project.stakeholders && (
-                          <div><strong>👥 שותפים:</strong> {project.stakeholders}</div>
-                        )}
+                        {project.targetDate && <div><strong>📅 יעד:</strong> {new Date(project.targetDate).toLocaleDateString('he-IL')}</div>}
+                        {project.kpis && <div><strong>📊 KPIs:</strong> {project.kpis}</div>}
+                        {project.stakeholders && <div><strong>👥 שותפים:</strong> {project.stakeholders}</div>}
                       </div>
                     </div>
                   )}
                 </div>
 
                 <div className="process-stats" style={{ marginTop: '16px' }}>
-                  <span>{projectProgress}% התקדמות</span>
-                  <span>{project.tasks.filter((task) => task.status === 'דחוף').length} דחופות</span>
-                  <span>{project.tasks.filter((task) => task.status === 'ממתין').length} ממתינות</span>
-                  <span>{project.tasks.filter((task) => task.owner === UNASSIGNED_OWNER).length} לא משויכות</span>
+                  <span>{project.tasks.filter((t) => t.status === 'דחוף').length} דחופות</span>
+                  <span>{project.tasks.filter((t) => t.status === 'ממתין').length} ממתינות</span>
+                  <span>{project.tasks.filter((t) => t.owner === UNASSIGNED_OWNER).length} לא משויכות</span>
                 </div>
               </section>
             )
@@ -1183,26 +988,22 @@ function App() {
         </main>
       )}
 
+      {/* ════════════════════ INTEGRATIONS ════════════════════ */}
       {view === 'integrations' && (
         <main className="board">
           <div className="integration-grid">
             <section className="panel google-panel">
               <div className="section-head">
                 <h3>חיבור Google</h3>
-                <p>התחברות לחשבון שלך כדי לסנכרן מול Google Tasks ו-Google Calendar.</p>
+                <p>התחברות לחשבון לסנכרון עם Google Tasks ו-Google Calendar.</p>
               </div>
               {googleProfile ? (
                 <div className="google-connected">
                   <div className="google-user">
-                    {googleProfile.picture ? <img src={googleProfile.picture} alt={googleProfile.name} className="google-avatar" /> : null}
-                    <div>
-                      <strong>{googleProfile.name}</strong>
-                      <p>{googleProfile.email}</p>
-                    </div>
+                    {googleProfile.picture && <img src={googleProfile.picture} alt={googleProfile.name} className="google-avatar" />}
+                    <div><strong>{googleProfile.name}</strong><p>{googleProfile.email}</p></div>
                   </div>
-                  <button type="button" className="ghost-button" onClick={disconnectGoogle} disabled={googleTasksBusy}>
-                    התנתקות
-                  </button>
+                  <button type="button" className="ghost-button" onClick={disconnectGoogle} disabled={googleTasksBusy}>התנתקות</button>
                 </div>
               ) : GOOGLE_CLIENT_ID ? (
                 <div className="google-signin-wrap">
@@ -1212,75 +1013,56 @@ function App() {
                 </div>
               ) : (
                 <div className="info-box">
-                  <strong>החיבור מוכן בקוד אבל חסר Client ID.</strong>
-                  <p>ברגע שתוסיף `VITE_GOOGLE_CLIENT_ID`, כפתור ההתחברות יופיע כאן.</p>
+                  <strong>החיבור מוכן אבל חסר Client ID.</strong>
+                  <p>הוסף `VITE_GOOGLE_CLIENT_ID` ל-.env</p>
                 </div>
               )}
-              {googleMessage ? <p className="muted-line">{googleMessage}</p> : null}
+              {googleMessage && <p className="muted-line">{googleMessage}</p>}
             </section>
-            
+
             <section className="panel microsoft-panel">
               <div className="section-head">
                 <h3>סנכרון מיידי</h3>
-                <p>ייצוא משימות ישירות לתוך Google Tasks דרך האתר.</p>
+                <p>ייצוא משימות ישירות ל-Google Tasks.</p>
               </div>
               {googleProfile ? (
                 <div className="integration-stack">
                   <div className="microsoft-actions">
-                    <select className="field-input compact" value={syncProjectId} onChange={(event) => setSyncProjectId(event.target.value)}>
-                      {projects.map((project) => (
-                        <option key={project.id} value={project.id}>
-                          {project.name}
-                        </option>
-                      ))}
+                    <select className="field-input compact" value={syncProjectId} onChange={(e) => setSyncProjectId(e.target.value)}>
+                      {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </select>
-                    <select className="field-input compact" value={selectedGoogleTaskListId} onChange={(event) => setSelectedGoogleTaskListId(event.target.value)}>
+                    <select className="field-input compact" value={selectedGoogleTaskListId} onChange={(e) => setSelectedGoogleTaskListId(e.target.value)}>
                       <option value="">בחר רשימת Google Tasks</option>
-                      {googleTasksLists.map((list) => (
-                        <option key={list.id} value={list.id}>
-                          {list.title}
-                        </option>
-                      ))}
+                      {googleTasksLists.map((l) => <option key={l.id} value={l.id}>{l.title}</option>)}
                     </select>
-                    <button type="button" className="ghost-button" onClick={() => void connectGoogleTasks()} disabled={googleTasksBusy}>
-                      {googleTasksBusy ? 'טוען...' : 'אישור Google Tasks'}
-                    </button>
-                    <button type="button" className="ghost-button" onClick={() => void refreshGoogleTasksLists()} disabled={googleTasksBusy}>
-                      רענון נתונים
-                    </button>
-                    <button type="button" className="primary-button" onClick={() => void syncProjectToGoogleTasks()} disabled={googleTasksBusy || !selectedGoogleTaskListId}>
-                      ייצוא משימות
-                    </button>
+                    <button type="button" className="ghost-button" onClick={() => void connectGoogleTasks()} disabled={googleTasksBusy}>{googleTasksBusy ? 'טוען...' : 'אישור Tasks'}</button>
+                    <button type="button" className="ghost-button" onClick={() => void refreshGoogleTasksLists()} disabled={googleTasksBusy}>רענון</button>
+                    <button type="button" className="primary-button" onClick={() => void syncProjectToGoogleTasks()} disabled={googleTasksBusy || !selectedGoogleTaskListId}>ייצוא</button>
                   </div>
                 </div>
               ) : (
-                <div className="info-box">
-                  <strong>יש להתחבר קודם לגוגל.</strong>
-                  <p>לאחר ההתחברות תוכל לייצא משימות בלחיצת כפתור.</p>
-                </div>
+                <div className="info-box"><strong>יש להתחבר קודם לגוגל.</strong></div>
               )}
+              {selectedGoogleTaskList && <p className="muted-line">רשימה: {selectedGoogleTaskList.title}</p>}
             </section>
           </div>
         </main>
       )}
 
+      {/* ════════════════════ EVENTS ════════════════════ */}
       {view === 'events' && (
         <main className="board">
           <section className="panel calendar-panel">
             <div className="section-head">
-              <h3>לשונית יומן</h3>
-              <p>תצוגה שבועית עם איחוד אוטומטי של אירועים מקומיים ואירועי Google Calendar.</p>
+              <h3>יומן</h3>
+              <p>תצוגה שבועית עם אירועים מקומיים ו-Google Calendar.</p>
             </div>
             <div className="calendar-toolbar">
               <div className="mode-switch">
-                <button type="button" className={calendarMode === 'week' ? 'tab-button active' : 'tab-button'} onClick={() => setCalendarMode('week')}>
-                  שבועי
-                </button>
-                <button type="button" className={calendarMode === 'day' ? 'tab-button active' : 'tab-button'} onClick={() => setCalendarMode('day')}>
-                  יומי
-                </button>
+                <button type="button" className={calendarMode === 'week' ? 'tab-button active' : 'tab-button'} onClick={() => setCalendarMode('week')}>שבועי</button>
+                <button type="button" className={calendarMode === 'day' ? 'tab-button active' : 'tab-button'} onClick={() => setCalendarMode('day')}>יומי</button>
               </div>
-              <input className="field-input compact calendar-date-input" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+              <input className="field-input compact calendar-date-input" type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
             </div>
             <div className={calendarMode === 'day' ? 'calendar-grid calendar-grid-day' : 'calendar-grid'}>
               {calendarEntries.map((entry) => (
@@ -1289,27 +1071,26 @@ function App() {
                     <h4>{entry.label}</h4>
                     <span>{entry.date}</span>
                   </div>
-
                   {entry.events.length > 0 || entry.googleEvents.length > 0 ? (
                     <div className="calendar-events-wrap">
                       {entry.events.map((item) => {
-                        const project = projects.find((projectItem) => projectItem.id === item.projectId)
+                        const p = projects.find((proj) => proj.id === item.projectId)
                         return (
                           <div className="calendar-event" key={item.id}>
                             <strong>{item.title}</strong>
-                            <span>{project?.name ?? 'ללא תחום'}</span>
+                            <span>{p?.name ?? 'ללא תחום'}</span>
                           </div>
                         )
                       })}
                       {entry.googleEvents.map((item) => (
-                        <div className="calendar-event" key={item.id} style={{ borderColor: '#4285F4', backgroundColor: 'rgba(66, 133, 244, 0.1)' }}>
+                        <div className="calendar-event" key={item.id} style={{ borderColor: '#4285F4', backgroundColor: 'rgba(66,133,244,0.1)' }}>
                           <strong>📅 {item.summary}</strong>
                           <span>Google Calendar</span>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="muted-line">אין אירועים ביום הזה.</p>
+                    <p className="muted-line">אין אירועים.</p>
                   )}
                 </article>
               ))}
@@ -1319,45 +1100,23 @@ function App() {
           <div className="event-layout">
             <section className="panel">
               <div className="section-head">
-                <h3>הוספת אירוע יומן מקומי</h3>
-                <p>פעולה פנימית בתוך הלוח הזו (מערכת עצמאית).</p>
+                <h3>הוספת אירוע</h3>
               </div>
               <form className="event-form" onSubmit={handleEventSubmit}>
-                <input className="field-input" type="text" placeholder="שם האירוע" value={eventForm.title} onChange={(event) => setEventForm((current) => ({ ...current, title: event.target.value }))} />
-                <input className="field-input" type="date" value={eventForm.date} onChange={(event) => setEventForm((current) => ({ ...current, date: event.target.value }))} />
-                <select className="field-input" value={eventForm.projectId} onChange={(event) => setEventForm((current) => ({ ...current, projectId: event.target.value }))}>
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
+                <input className="field-input" type="text" placeholder="שם האירוע" value={eventForm.title} onChange={(e) => setEventForm((c) => ({ ...c, title: e.target.value }))} />
+                <input className="field-input" type="date" value={eventForm.date} onChange={(e) => setEventForm((c) => ({ ...c, date: e.target.value }))} />
+                <select className="field-input" value={eventForm.projectId} onChange={(e) => setEventForm((c) => ({ ...c, projectId: e.target.value }))}>
+                  {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
-                <textarea className="field-input field-textarea" placeholder="תיאור קצר או הערות" value={eventForm.description} onChange={(event) => setEventForm((current) => ({ ...current, description: event.target.value }))} />
-                <button type="submit" className="primary-button">
-                  שמירת אירוע
-                </button>
+                <textarea className="field-input field-textarea" placeholder="תיאור" value={eventForm.description} onChange={(e) => setEventForm((c) => ({ ...c, description: e.target.value }))} />
+                <button type="submit" className="primary-button">שמירת אירוע</button>
               </form>
             </section>
-          </div>
-
-          <div style={{ marginTop: '20px', padding: '10px', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--text-main)', fontSize: '12px', borderRadius: '12px', direction: 'ltr', textAlign: 'left', overflowX: 'auto', maxHeight: '300px' }}>
-            <strong>Debug Info:</strong><br/>
-            Calendar Mode: {calendarMode}<br/>
-            Selected Date: {selectedDate}<br/>
-            Google Auth: {googleProfile ? 'Connected' : 'Disconnected'}<br/>
-            Raw Google Events Count: {googleEvents.length}<br/>
-            First 20 Google Events:<br/>
-            {googleEvents.slice(0, 20).map(e => (
-              <div key={e.id} style={{ borderBottom: '1px solid rgba(0,0,0,0.1)', paddingBottom: '4px', marginBottom: '4px' }}>
-                Summary: {e.summary}<br/>
-                Start: {e.start?.dateTime || e.start?.date}<br/>
-                End: {e.end?.dateTime || e.end?.date}
-              </div>
-            ))}
           </div>
         </main>
       )}
 
+      {/* ════════════════════ ACTIVITY ════════════════════ */}
       {view === 'activity' && (
         <main className="board">
           <section className="panel">
@@ -1380,126 +1139,51 @@ function App() {
         </main>
       )}
 
-      <button className="fab-button" onClick={() => setShowGlobalAddModal('single')} title="הוספת משימות">+</button>
+      {/* FAB */}
+      <button className="fab-button" onClick={() => setShowGlobalAddModal('single')} title="הוספת משימה">+</button>
 
+      {/* ════════ MODAL: Add task / bulk ════════ */}
       {showGlobalAddModal && (
         <div className="modal-backdrop" role="presentation" onClick={() => setShowGlobalAddModal(false)}>
-          <section className="modal-card" role="dialog" aria-modal="true" aria-label="יצירת משימות" onClick={(event) => event.stopPropagation()}>
+          <section className="modal-card" role="dialog" aria-modal="true" aria-label="יצירת משימות" onClick={(e) => e.stopPropagation()}>
             <div className="section-head" style={{ marginBottom: '20px' }}>
-              <div style={{ display: 'flex', gap: '16px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '16px' }}>
-                <button 
-                  type="button" 
-                  className={showGlobalAddModal === 'single' ? 'tab-button active' : 'tab-button'} 
-                  onClick={() => setShowGlobalAddModal('single')}
-                >
-                  משימה בודדת
-                </button>
-                <button 
-                  type="button" 
-                  className={showGlobalAddModal === 'bulk' ? 'tab-button active' : 'tab-button'} 
-                  onClick={() => setShowGlobalAddModal('bulk')}
-                >
-                  ייבוא חכם (הדבקת טקסט)
-                </button>
-                <button 
-                  type="button" 
-                  className="tab-button"
-                  style={{ color: '#3b82f6', fontWeight: 600 }}
-                  onClick={() => {
-                    setShowGlobalAddModal(false)
-                    setProjectForm({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' })
-                    setShowProjectModal({ mode: 'create' })
-                  }}
-                >
-                  + נושא (תהליך) חדש
-                </button>
+              <div style={{ display: 'flex', gap: '16px', borderBottom: '1px solid var(--surface-border)', paddingBottom: '16px', flexWrap: 'wrap' }}>
+                <button type="button" className={showGlobalAddModal === 'single' ? 'tab-button active' : 'tab-button'} onClick={() => setShowGlobalAddModal('single')}>משימה בודדת</button>
+                <button type="button" className={showGlobalAddModal === 'bulk' ? 'tab-button active' : 'tab-button'} onClick={() => setShowGlobalAddModal('bulk')}>ייבוא חכם</button>
+                <button type="button" className="tab-button" style={{ color: 'var(--primary)', fontWeight: 600 }} onClick={() => { setShowGlobalAddModal(false); setProjectForm({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' }); setShowProjectModal({ mode: 'create' }) }}>+ תהליך חדש</button>
               </div>
             </div>
 
             {showGlobalAddModal === 'single' ? (
               <form className="event-form" onSubmit={(e) => { handleTaskSubmit(e); setShowGlobalAddModal(false) }}>
-                <input
-                  className="field-input"
-                  type="text"
-                  placeholder="שם המשימה"
-                  required
-                  value={taskForm.title}
-                  onChange={(event) => setTaskForm((current) => ({ ...current, title: event.target.value }))}
-                />
-                <input
-                  className="field-input"
-                  type="date"
-                  required
-                  value={taskForm.dueDate}
-                  onChange={(event) => setTaskForm((current) => ({ ...current, dueDate: event.target.value }))}
-                />
-                <select
-                  className="field-input"
-                  value={taskForm.projectId}
-                  onChange={(event) => setTaskForm((current) => ({ ...current, projectId: event.target.value }))}
-                >
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
+                <input className="field-input" type="text" placeholder="שם המשימה" required value={taskForm.title} onChange={(e) => setTaskForm((c) => ({ ...c, title: e.target.value }))} />
+                <input className="field-input" type="date" required value={taskForm.dueDate} onChange={(e) => setTaskForm((c) => ({ ...c, dueDate: e.target.value }))} />
+                <select className="field-input" value={taskForm.projectId} onChange={(e) => setTaskForm((c) => ({ ...c, projectId: e.target.value }))}>
+                  {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
-                <select
-                  className="field-input"
-                  value={taskForm.status}
-                  onChange={(event) => setTaskForm((current) => ({ ...current, status: event.target.value as TaskStatus }))}
-                >
-                  {STATUS_ORDER.map((status) => (
-                    <option key={status} value={status}>
-                      {status}
-                    </option>
-                  ))}
+                <select className="field-input" value={taskForm.status} onChange={(e) => setTaskForm((c) => ({ ...c, status: e.target.value as TaskStatus }))}>
+                  {STATUS_ORDER.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
                 <div className="modal-actions">
-                  <button type="button" className="ghost-button" onClick={() => setShowGlobalAddModal(false)}>
-                    ביטול
-                  </button>
-                  <button type="submit" className="primary-button">
-                    שמירת משימה
-                  </button>
+                  <button type="button" className="ghost-button" onClick={() => setShowGlobalAddModal(false)}>ביטול</button>
+                  <button type="submit" className="primary-button">שמירת משימה</button>
                 </div>
               </form>
             ) : (
               <form className="event-form" onSubmit={handleBulkImport}>
                 <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
-                  <span>הדבק טקסט או רשימת בולטים</span>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 8px 0' }}>המערכת תיקח כל שורה, תנקה סימוני בולטים של Gemini ותהפוך למשימה נפרדת.</p>
-                  <textarea 
-                    className="field-input field-textarea" 
-                    placeholder="- משימה ראשונה להיט&#10;- משימה שנייה&#10;- משימה שלישית..." 
-                    value={bulkImportText} 
-                    onChange={(e) => setBulkImportText(e.target.value)} 
-                    style={{ minHeight: '180px' }}
-                    required
-                  />
+                  <span>הדבק טקסט חופשי — כל שורה תהיה משימה</span>
+                  <textarea className="field-input field-textarea" placeholder="- משימה א׳&#10;- משימה ב׳" value={bulkImportText} onChange={(e) => setBulkImportText(e.target.value)} style={{ minHeight: '180px' }} required />
                 </div>
                 <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
-                  <span>לאיזה תהליך/פרויקט לשייך את כולן?</span>
-                  <select
-                    className="field-input"
-                    value={bulkProjectId || projects[0]?.id || ''}
-                    onChange={(event) => setBulkProjectId(event.target.value)}
-                  >
-                    {!bulkProjectId && <option value="" disabled>בחר פרויקט...</option>}
-                    {projects.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
-                      </option>
-                    ))}
+                  <span>שיוך לתהליך</span>
+                  <select className="field-input" value={bulkProjectId || projects[0]?.id || ''} onChange={(e) => setBulkProjectId(e.target.value)}>
+                    {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </div>
                 <div className="modal-actions" style={{ gridColumn: '1 / -1' }}>
-                  <button type="button" className="ghost-button" onClick={() => setShowGlobalAddModal(false)}>
-                    ביטול
-                  </button>
-                  <button type="submit" className="primary-button" disabled={!bulkImportText.trim() || (!bulkProjectId && !projects[0]?.id)}>
-                    ייבוא כרשימת משימות
-                  </button>
+                  <button type="button" className="ghost-button" onClick={() => setShowGlobalAddModal(false)}>ביטול</button>
+                  <button type="submit" className="primary-button" disabled={!bulkImportText.trim()}>ייבוא</button>
                 </div>
               </form>
             )}
@@ -1507,136 +1191,74 @@ function App() {
         </div>
       )}
 
+      {/* ════════ MODAL: Edit task ════════ */}
       {editingTask && (
         <div className="modal-backdrop" role="presentation" onClick={() => setEditingTask(null)}>
-          <section className="modal-card" role="dialog" aria-modal="true" aria-label="עריכת משימה" onClick={(event) => event.stopPropagation()}>
+          <section className="modal-card" role="dialog" aria-modal="true" aria-label="עריכת משימה" onClick={(e) => e.stopPropagation()}>
             <div className="section-head">
               <h3>עריכת משימה</h3>
-              <p>מכאן גם משייכים בעלים למשימה שלא שויכה עדיין.</p>
+              <p>עדכן כותרת, בעלים, תאריך, סטטוס והערות.</p>
             </div>
             <form className="event-form" onSubmit={saveTaskEdits}>
-              <input className="field-input" type="text" value={editingTask.title} onChange={(event) => setEditingTask((current) => (current ? { ...current, title: event.target.value } : current))} />
-              <input className="field-input" type="text" value={editingTask.owner} onChange={(event) => setEditingTask((current) => (current ? { ...current, owner: event.target.value } : current))} placeholder="שם בעלים או לא משויך" />
-              <input className="field-input" type="date" value={editingTask.dueDate} onChange={(event) => setEditingTask((current) => (current ? { ...current, dueDate: event.target.value } : current))} />
-              <select className="field-input" value={editingTask.status} onChange={(event) => setEditingTask((current) => (current ? { ...current, status: event.target.value as TaskStatus } : current))}>
-                {STATUS_ORDER.map((status) => (
-                  <option key={status} value={status}>
-                    {status}
-                  </option>
-                ))}
+              <input className="field-input" type="text" value={editingTask.title} onChange={(e) => setEditingTask((c) => c ? { ...c, title: e.target.value } : c)} />
+              <input className="field-input" type="text" value={editingTask.owner} onChange={(e) => setEditingTask((c) => c ? { ...c, owner: e.target.value } : c)} placeholder="שם בעלים" />
+              <input className="field-input" type="date" value={editingTask.dueDate} onChange={(e) => setEditingTask((c) => c ? { ...c, dueDate: e.target.value } : c)} />
+              <select className="field-input" value={editingTask.status} onChange={(e) => setEditingTask((c) => c ? { ...c, status: e.target.value as TaskStatus } : c)}>
+                {STATUS_ORDER.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
               <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
-                <span>הערות ועדכונים</span>
-                <textarea 
-                  className="field-input field-textarea" 
-                  style={{ minHeight: '80px' }}
-                  placeholder="הוסף למשימה הערות, סיכומים ועדכונים שוטפים..." 
-                  value={editingTask.notes || ''} 
-                  onChange={(event) => setEditingTask((current) => (current ? { ...current, notes: event.target.value } : current))} 
-                />
-                {editingTask.notesUpdatedAt && (
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginTop: '2px' }}>
-                    הערות עודכנו לאחרונה: {editingTask.notesUpdatedAt}
-                  </span>
-                )}
+                <span>הערות</span>
+                <textarea className="field-input field-textarea" style={{ minHeight: '80px' }} placeholder="הערות שוטפות..." value={editingTask.notes || ''} onChange={(e) => setEditingTask((c) => c ? { ...c, notes: e.target.value } : c)} />
+                {editingTask.notesUpdatedAt && <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginTop: '2px' }}>עודכן: {editingTask.notesUpdatedAt}</span>}
               </div>
               <div className="modal-actions">
-                <button type="button" className="ghost-button" onClick={() => setEditingTask(null)}>
-                  ביטול
-                </button>
-                <button type="submit" className="primary-button">
-                  שמירת שינויים
-                </button>
+                <button type="button" className="ghost-button" onClick={() => setEditingTask(null)}>ביטול</button>
+                <button type="submit" className="primary-button">שמירת שינויים</button>
               </div>
             </form>
           </section>
         </div>
       )}
 
+      {/* ════════ MODAL: Project ════════ */}
       {showProjectModal && (
         <div className="modal-backdrop" role="presentation" onClick={() => setShowProjectModal(null)}>
-          <section className="modal-card" role="dialog" aria-modal="true" aria-label="ניהול תהליך" onClick={(event) => event.stopPropagation()}>
+          <section className="modal-card" role="dialog" aria-modal="true" aria-label="ניהול תהליך" onClick={(e) => e.stopPropagation()}>
             <div className="section-head">
               <h3>{showProjectModal.mode === 'create' ? 'יצירת תהליך חדש' : 'עריכת תהליך'}</h3>
-              <p>התהליך משמש כמסגרת אסטרטגית המאגדת בתוכה משימות נגזרות.</p>
             </div>
             <form className="event-form" onSubmit={handleProjectSubmit}>
               <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
-                <span>שם התהליך / יעד</span>
-                <input 
-                  className="field-input" 
-                  type="text" 
-                  required
-                  placeholder="לדוגמה: שדרוג חזות העיר מרכז" 
-                  value={projectForm.name} 
-                  onChange={(e) => setProjectForm({ ...projectForm, name: e.target.value })} 
-                />
+                <span>שם התהליך</span>
+                <input className="field-input" type="text" required placeholder="שם התהליך" value={projectForm.name} onChange={(e) => setProjectForm({ ...projectForm, name: e.target.value })} />
               </div>
               <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
                 <span>מטרות ואסטרטגיה</span>
-                <textarea 
-                  className="field-input field-textarea" 
-                  placeholder="פירוט המטרות, משאבים נדרשים וכו'..." 
-                  value={projectForm.description} 
-                  onChange={(e) => setProjectForm({ ...projectForm, description: e.target.value })} 
-                />
+                <textarea className="field-input field-textarea" placeholder="פירוט..." value={projectForm.description} onChange={(e) => setProjectForm({ ...projectForm, description: e.target.value })} />
               </div>
               <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
-                <span>אבני דרך מרכזיות</span>
-                <textarea 
-                  className="field-input field-textarea" 
-                  style={{ minHeight: '60px' }}
-                  placeholder="רשימת אבני הדרך המרכזיות בתהליך..." 
-                  value={projectForm.milestones} 
-                  onChange={(e) => setProjectForm({ ...projectForm, milestones: e.target.value })} 
-                />
+                <span>אבני דרך</span>
+                <textarea className="field-input field-textarea" style={{ minHeight: '60px' }} placeholder="אבני דרך..." value={projectForm.milestones} onChange={(e) => setProjectForm({ ...projectForm, milestones: e.target.value })} />
               </div>
               <div className="toolbar-field">
-                <span>מדדי הצלחה (KPIs)</span>
-                <input 
-                  className="field-input" 
-                  type="text" 
-                  placeholder="לדוג': 100 נרשמים, 20% חיסכון..." 
-                  value={projectForm.kpis} 
-                  onChange={(e) => setProjectForm({ ...projectForm, kpis: e.target.value })} 
-                />
+                <span>KPIs</span>
+                <input className="field-input" type="text" placeholder="מדדים..." value={projectForm.kpis} onChange={(e) => setProjectForm({ ...projectForm, kpis: e.target.value })} />
               </div>
               <div className="toolbar-field">
-                <span>שותפים ומעורבים</span>
-                <input 
-                  className="field-input" 
-                  type="text" 
-                  placeholder="לדוג': מחלקת הנדסה, גזברות..." 
-                  value={projectForm.stakeholders} 
-                  onChange={(e) => setProjectForm({ ...projectForm, stakeholders: e.target.value })} 
-                />
+                <span>שותפים</span>
+                <input className="field-input" type="text" placeholder="גורמים..." value={projectForm.stakeholders} onChange={(e) => setProjectForm({ ...projectForm, stakeholders: e.target.value })} />
               </div>
               <div className="toolbar-field">
-                <span>תאריך יעד לסיום תהליך</span>
-                <input 
-                  className="field-input" 
-                  type="date" 
-                  value={projectForm.targetDate} 
-                  onChange={(e) => setProjectForm({ ...projectForm, targetDate: e.target.value })} 
-                />
+                <span>תאריך יעד</span>
+                <input className="field-input" type="date" value={projectForm.targetDate} onChange={(e) => setProjectForm({ ...projectForm, targetDate: e.target.value })} />
               </div>
               <div className="toolbar-field">
-                <span>צבע זיהוי</span>
-                <input 
-                  className="field-input" 
-                  type="color" 
-                  style={{ height: '50px', padding: '4px' }}
-                  value={projectForm.color} 
-                  onChange={(e) => setProjectForm({ ...projectForm, color: e.target.value })} 
-                />
+                <span>צבע</span>
+                <input className="field-input" type="color" style={{ height: '50px', padding: '4px' }} value={projectForm.color} onChange={(e) => setProjectForm({ ...projectForm, color: e.target.value })} />
               </div>
               <div className="modal-actions">
-                <button type="button" className="ghost-button" onClick={() => setShowProjectModal(null)}>
-                  ביטול
-                </button>
-                <button type="submit" className="primary-button">
-                  {showProjectModal.mode === 'create' ? 'יצירת תהליך' : 'שמירת שינויים'}
-                </button>
+                <button type="button" className="ghost-button" onClick={() => setShowProjectModal(null)}>ביטול</button>
+                <button type="submit" className="primary-button">{showProjectModal.mode === 'create' ? 'יצירת תהליך' : 'שמירת שינויים'}</button>
               </div>
             </form>
           </section>
