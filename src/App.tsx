@@ -1,5 +1,14 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import { FIREBASE_ENABLED, auth, db } from './firebase'
+import {
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+  type User as FirebaseUser,
+} from 'firebase/auth'
+import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -361,6 +370,11 @@ function App() {
     window.localStorage.setItem('bat-yam-dark', String(darkMode))
   }, [darkMode])
 
+  // ── Firebase ─────────────────────────────────────────────────────────────
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null)
+  const [firebaseReady, setFirebaseReady] = useState(!FIREBASE_ENABLED)
+  const firestoreUnsubRef = useRef<(() => void) | null>(null)
+
   const [domains, setDomains] = useState<Domain[]>(INITIAL_DOMAINS)
   const [processes, setProcesses] = useState<Process[]>(INITIAL_PROCESSES)
   const [events, setEvents] = useState<EventItem[]>(INITIAL_EVENTS)
@@ -408,45 +422,80 @@ function App() {
   })
   const [eventForm, setEventForm] = useState({ title: '', date: '', domainId: INITIAL_DOMAINS[0].id, description: '' })
 
-  // ── Load from localStorage ───────────────────────────────────────────────
-  useEffect(() => {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as PersistedState
-        if (parsed.domains?.length) setDomains(sanitizeDomains(parsed.domains))
-        if (parsed.processes?.length) setProcesses(sanitizeProcesses(parsed.processes))
-        if (parsed.events?.length) setEvents(parsed.events)
-        if (parsed.activity?.length) setActivity(parsed.activity)
-        if (parsed.googleProfile) setGoogleProfile(parsed.googleProfile)
-        if (parsed.selectedGoogleTaskListId) setSelectedGoogleTaskListId(parsed.selectedGoogleTaskListId)
-        if (parsed.googleEvents) setGoogleEvents(parsed.googleEvents)
-        return
-      } catch {
-        window.localStorage.removeItem(STORAGE_KEY)
-      }
-    }
-    // migrate from v7
-    const old = window.localStorage.getItem('bat-yam-hq-local-state-v7')
-    if (old) {
-      try {
-        const parsed = JSON.parse(old) as PersistedState & { processes?: Array<Process & { tasks?: Task[] }> }
-        if (parsed.domains?.length) setDomains(sanitizeDomains(parsed.domains))
-        if (parsed.processes?.length) setProcesses(sanitizeProcesses(parsed.processes as unknown[]))
-        if (parsed.events?.length) setEvents(parsed.events)
-        if (parsed.activity?.length) setActivity(parsed.activity)
-        if (parsed.googleProfile) setGoogleProfile(parsed.googleProfile)
-        if (parsed.selectedGoogleTaskListId) setSelectedGoogleTaskListId(parsed.selectedGoogleTaskListId)
-        if (parsed.googleEvents) setGoogleEvents(parsed.googleEvents)
-      } catch { /* ignore */ }
-    }
+  // ── Helper: apply persisted state to React state ──────────────────────────
+  const applyPersistedState = useCallback((parsed: PersistedState) => {
+    if (parsed.domains?.length) setDomains(sanitizeDomains(parsed.domains))
+    if (parsed.processes?.length) setProcesses(sanitizeProcesses(parsed.processes as unknown[]))
+    if (parsed.events?.length) setEvents(parsed.events)
+    if (parsed.activity?.length) setActivity(parsed.activity)
+    if (parsed.googleProfile) setGoogleProfile(parsed.googleProfile)
+    if (parsed.selectedGoogleTaskListId) setSelectedGoogleTaskListId(parsed.selectedGoogleTaskListId)
+    if (parsed.googleEvents) setGoogleEvents(parsed.googleEvents)
   }, [])
 
+  // ── Load from localStorage (fallback when Firebase not configured) ────────
   useEffect(() => {
+    if (FIREBASE_ENABLED) return   // Firebase handles persistence
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      try { applyPersistedState(JSON.parse(raw) as PersistedState); return }
+      catch { window.localStorage.removeItem(STORAGE_KEY) }
+    }
+    const old = window.localStorage.getItem('bat-yam-hq-local-state-v7')
+    if (old) {
+      try { applyPersistedState(JSON.parse(old) as PersistedState) }
+      catch { /* ignore */ }
+    }
+  }, [applyPersistedState])
+
+  // ── Save to localStorage (fallback) ───────────────────────────────────────
+  useEffect(() => {
+    if (FIREBASE_ENABLED) return
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
       domains, processes, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents,
     }))
   }, [domains, processes, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents])
+
+  // ── Firebase Auth listener ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !auth) { setFirebaseReady(true); return }
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user)
+      setFirebaseReady(true)
+      if (!user) {
+        // signed out — tear down Firestore listener
+        firestoreUnsubRef.current?.()
+        firestoreUnsubRef.current = null
+        return
+      }
+      // signed in — subscribe to real-time Firestore sync
+      if (!db) return
+      const ref = doc(db, 'users', user.uid)
+      // Load once first (fast initial render), then subscribe
+      getDoc(ref).then((snap) => {
+        if (snap.exists()) applyPersistedState(snap.data() as PersistedState)
+      }).catch(() => {})
+
+      firestoreUnsubRef.current = onSnapshot(ref, (snap) => {
+        if (snap.exists()) applyPersistedState(snap.data() as PersistedState)
+      })
+    })
+    return () => { unsub(); firestoreUnsubRef.current?.() }
+  }, [applyPersistedState])
+
+  // ── Save to Firestore (debounced 800 ms) ──────────────────────────────────
+  const firestoreSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !firebaseUser || !db) return
+    firestoreSaveTimer.current && clearTimeout(firestoreSaveTimer.current)
+    firestoreSaveTimer.current = setTimeout(() => {
+      if (!db || !firebaseUser) return
+      setDoc(doc(db, 'users', firebaseUser.uid), {
+        domains, processes, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents,
+      }, { merge: true }).catch(() => {})
+    }, 800)
+    return () => { firestoreSaveTimer.current && clearTimeout(firestoreSaveTimer.current) }
+  }, [domains, processes, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents, firebaseUser])
 
   useEffect(() => {
     if (googleProfile && GOOGLE_CLIENT_ID) {
@@ -755,7 +804,27 @@ function App() {
     setEditingTask(null)
   }
 
-  // ─── Google ───────────────────────────────────────────────────────────────
+  // ─── Firebase Auth ────────────────────────────────────────────────────────
+
+  const signInWithFirebase = async () => {
+    if (!auth) return
+    try { await signInWithPopup(auth, new GoogleAuthProvider()) }
+    catch { /* user closed popup */ }
+  }
+
+  const signOutFromFirebase = async () => {
+    if (!auth) return
+    await signOut(auth)
+    // Reset to initial data
+    setDomains(INITIAL_DOMAINS)
+    setProcesses(INITIAL_PROCESSES)
+    setEvents(INITIAL_EVENTS)
+    setActivity(INITIAL_ACTIVITY)
+    setGoogleProfile(null)
+    setGoogleEvents([])
+  }
+
+  // ─── Google API (Tasks & Calendar) ───────────────────────────────────────
 
   const ensureGoogleServices = async () => {
     if (!GOOGLE_CLIENT_ID) throw new Error('חסר VITE_GOOGLE_CLIENT_ID')
@@ -1177,9 +1246,35 @@ function App() {
       {/* ════════════════════ INTEGRATIONS ════════════════════ */}
       {view === 'integrations' && (
         <main className="board">
+
+          {/* ── Firebase Sync Card ── */}
+          {FIREBASE_ENABLED && (
+            <section className="panel" style={{ marginBottom: '20px', borderRight: '4px solid #f59e0b' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+                <div>
+                  <h3 style={{ margin: '0 0 4px' }}>☁️ סנכרון בין מכשירים</h3>
+                  {firebaseUser ? (
+                    <p className="muted-line" style={{ margin: 0 }}>
+                      מחובר בתור <strong>{firebaseUser.displayName ?? firebaseUser.email}</strong> — הנתונים מסונכרנים אוטומטית בכל המכשירים
+                    </p>
+                  ) : (
+                    <p className="muted-line" style={{ margin: 0 }}>התחבר כדי לסנכרן נתונים בין מחשבים ומכשירים שונים</p>
+                  )}
+                </div>
+                {firebaseUser ? (
+                  <button type="button" className="ghost-button small-button" onClick={() => void signOutFromFirebase()}>התנתקות</button>
+                ) : (
+                  <button type="button" className="primary-button" style={{ backgroundColor: '#f59e0b', borderColor: '#f59e0b' }} onClick={() => void signInWithFirebase()}>
+                    התחבר עם Google לסנכרון
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
+
           <div className="integration-grid">
             <section className="panel google-panel">
-              <div className="section-head"><h3>חיבור Google</h3><p>התחברות לחשבון לסנכרון עם Google Tasks ו-Google Calendar.</p></div>
+              <div className="section-head"><h3>חיבור Google Tasks</h3><p>ייצוא משימות ל-Google Tasks ויבוא אירועים מ-Google Calendar.</p></div>
               {googleProfile ? (
                 <div className="google-connected">
                   <div className="google-user">
