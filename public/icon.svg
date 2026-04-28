@@ -1,4 +1,53 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
-  <rect width="192" height="192" rx="40" fill="#2563eb"/>
-  <text x="96" y="130" font-family="Arial, sans-serif" font-size="100" font-weight="bold" fill="white" text-anchor="middle">ב</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e3a8a"/>
+      <stop offset="100%" stop-color="#0369a1"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0.2"/>
+    </linearGradient>
+    <clipPath id="clip">
+      <rect width="512" height="512" rx="96"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+
+  <g clip-path="url(#clip)">
+    <!-- Sea waves (Bat Yam = daughter of the sea) -->
+    <path d="M0 420 Q64 395 128 420 Q192 445 256 420 Q320 395 384 420 Q448 445 512 420 L512 512 L0 512 Z" fill="url(#wave)"/>
+    <path d="M0 450 Q64 428 128 450 Q192 472 256 450 Q320 428 384 450 Q448 472 512 450 L512 512 L0 512 Z" fill="rgba(255,255,255,0.12)"/>
+
+    <!-- City Hall building -->
+    <!-- Roof / pediment triangle -->
+    <polygon points="156,195 256,110 356,195" fill="rgba(255,255,255,0.95)"/>
+    <!-- Flag pole -->
+    <rect x="252" y="78" width="8" height="38" fill="rgba(255,255,255,0.9)"/>
+    <polygon points="260,78 290,90 260,102" fill="#fbbf24"/>
+
+    <!-- Main facade -->
+    <rect x="156" y="192" width="200" height="190" fill="rgba(255,255,255,0.95)"/>
+
+    <!-- Columns -->
+    <rect x="176" y="192" width="16" height="190" fill="rgba(30,58,138,0.15)"/>
+    <rect x="214" y="192" width="16" height="190" fill="rgba(30,58,138,0.15)"/>
+    <rect x="282" y="192" width="16" height="190" fill="rgba(30,58,138,0.15)"/>
+    <rect x="320" y="192" width="16" height="190" fill="rgba(30,58,138,0.15)"/>
+
+    <!-- Windows -->
+    <rect x="182" y="225" width="32" height="32" rx="4" fill="rgba(30,58,138,0.25)"/>
+    <rect x="298" y="225" width="32" height="32" rx="4" fill="rgba(30,58,138,0.25)"/>
+
+    <!-- Door arch -->
+    <path d="M226,382 L226,308 Q256,280 286,308 L286,382 Z" fill="rgba(30,58,138,0.35)"/>
+
+    <!-- Green checkmark badge (top-right) -->
+    <circle cx="380" cy="148" r="68" fill="#10b981"/>
+    <circle cx="380" cy="148" r="68" fill="none" stroke="white" stroke-width="6"/>
+    <path d="M344 148 L366 172 L416 118" stroke="white" stroke-width="16" fill="none"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
 </svg>
