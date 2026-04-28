@@ -1409,11 +1409,19 @@ function App() {
                   {STATUS_ORDER.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </label>
-              {editingTask.processId && (
+              <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
+                <span>תהליך (לא חובה)</span>
+                <select className="field-input" value={editingTask.newProcessId} onChange={(e) => { const pid = e.target.value; const firstTopic = processes.find((p) => p.id === pid)?.topics[0]; setEditingTask((c) => c ? { ...c, newProcessId: pid, newTopicId: firstTopic?.id ?? '' } : c) }}>
+                  <option value="">— ישיר לתחום —</option>
+                  {processes.filter((p) => p.domainId === editingTask.domainId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>
+              {editingTask.newProcessId && (
                 <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
-                  <span>העברה לנושא אחר</span>
+                  <span>נושא</span>
                   <select className="field-input" value={editingTask.newTopicId} onChange={(e) => setEditingTask((c) => c ? { ...c, newTopicId: e.target.value } : c)}>
-                    {processes.find((p) => p.id === editingTask.processId)?.topics.map((tp) => <option key={tp.id} value={tp.id}>{tp.name}</option>)}
+                    <option value="">— בחר נושא —</option>
+                    {processes.find((p) => p.id === editingTask.newProcessId)?.topics.map((tp) => <option key={tp.id} value={tp.id}>{tp.name}</option>)}
                   </select>
                 </label>
               )}
