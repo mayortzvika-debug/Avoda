@@ -26,11 +26,17 @@ type Task = {
   notesUpdatedAt?: string
 }
 
+type Topic = {
+  id: string
+  name: string
+  tasks: Task[]
+}
+
 type Domain = {
   id: string
   name: string
   color: string
-  tasks: Task[]
+  tasks: Task[]   // direct tasks not belonging to any process
 }
 
 type Process = {
@@ -43,7 +49,7 @@ type Process = {
   kpis?: string
   stakeholders?: string
   targetDate?: string
-  tasks: Task[]
+  topics: Topic[]
 }
 
 type EventItem = {
@@ -112,8 +118,7 @@ declare global {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = 'bat-yam-hq-local-state-v7'
-const OLD_STORAGE_KEY = 'bat-yam-hq-local-state-v6'
+const STORAGE_KEY = 'bat-yam-hq-local-state-v8'
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined
 const GOOGLE_TASKS_SCOPES = [
   'https://www.googleapis.com/auth/tasks',
@@ -154,25 +159,29 @@ function normalizeTaskStatus(value: unknown): TaskStatus {
 
 function sanitizeTasks(tasks: unknown[]): Task[] {
   if (!Array.isArray(tasks)) return []
-  return tasks.map((t) => {
-    const task = t as Task
-    return { ...task, owner: task.owner || UNASSIGNED_OWNER, status: normalizeTaskStatus(task.status) }
-  })
+  return (tasks as Task[]).map((t) => ({ ...t, owner: t.owner || UNASSIGNED_OWNER, status: normalizeTaskStatus(t.status) }))
+}
+
+function sanitizeTopics(topics: unknown[]): Topic[] {
+  if (!Array.isArray(topics)) return []
+  return (topics as Topic[]).map((tp) => ({ ...tp, tasks: sanitizeTasks(tp.tasks ?? []) }))
 }
 
 function sanitizeDomains(raw: unknown[]): Domain[] {
   if (!Array.isArray(raw)) return []
-  return raw.map((d) => {
-    const domain = d as Domain
-    return { ...domain, tasks: sanitizeTasks(domain.tasks ?? []) }
-  })
+  return (raw as Domain[]).map((d) => ({ ...d, tasks: sanitizeTasks(d.tasks ?? []) }))
 }
 
 function sanitizeProcesses(raw: unknown[]): Process[] {
   if (!Array.isArray(raw)) return []
-  return raw.map((p) => {
-    const proc = p as Process
-    return { ...proc, tasks: sanitizeTasks(proc.tasks ?? []) }
+  return (raw as Process[]).map((p) => {
+    // migrate: if old data had tasks[], wrap in a default topic
+    const hasTopics = Array.isArray((p as Process & { topics?: unknown }).topics) && (p as Process & { topics?: unknown }).topics!.length > 0
+    const hasLegacyTasks = Array.isArray((p as Process & { tasks?: Task[] }).tasks) && (p as Process & { tasks?: Task[] }).tasks!.length > 0
+    if (!hasTopics && hasLegacyTasks) {
+      return { ...p, topics: [{ id: createId('topic'), name: 'כללי', tasks: sanitizeTasks((p as Process & { tasks: Task[] }).tasks) }] }
+    }
+    return { ...p, topics: sanitizeTopics((p as Process & { topics?: unknown[] }).topics ?? []) }
   })
 }
 
@@ -185,12 +194,7 @@ function progressColor(pct: number): string {
 // ─── Initial data ─────────────────────────────────────────────────────────────
 
 const INITIAL_DOMAINS: Domain[] = [
-  {
-    id: 'd-100',
-    name: '100 שנה לבת ים',
-    color: '#7c3aed',
-    tasks: [],
-  },
+  { id: 'd-100', name: '100 שנה לבת ים', color: '#7c3aed', tasks: [] },
   {
     id: 'd-young',
     name: 'אסטרטגיית צעירים',
@@ -212,12 +216,7 @@ const INITIAL_DOMAINS: Domain[] = [
       { id: 'beach-4', title: 'פגישה עם נדל"ן שצ"פ נורדאו', dueDate: '2026-03-24', owner: UNASSIGNED_OWNER, status: 'ממתין' },
     ],
   },
-  {
-    id: 'd-mayor',
-    name: 'לשכת ראש העיר',
-    color: '#10b981',
-    tasks: [],
-  },
+  { id: 'd-mayor', name: 'לשכת ראש העיר', color: '#10b981', tasks: [] },
   {
     id: 'd-emergency',
     name: 'חירום',
@@ -228,12 +227,7 @@ const INITIAL_DOMAINS: Domain[] = [
       { id: 'em-3', title: "התקנת מערכת 'תמונת מצב' מבצעית", dueDate: '2026-03-22', owner: UNASSIGNED_OWNER, status: 'דחוף' },
     ],
   },
-  {
-    id: 'd-tzvika',
-    name: 'נושאים לצביקה',
-    color: '#f59e0b',
-    tasks: [],
-  },
+  { id: 'd-tzvika', name: 'נושאים לצביקה', color: '#f59e0b', tasks: [] },
 ]
 
 const INITIAL_PROCESSES: Process[] = [
@@ -242,12 +236,24 @@ const INITIAL_PROCESSES: Process[] = [
     domainId: 'd-100',
     name: 'פרויקט ה-100',
     color: '#7c3aed',
-    tasks: [
-      { id: 'p100-1', title: 'סגירת לוגו ומיתוג לכלים', dueDate: '2026-03-26', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
-      { id: 'p100-2', title: 'סגירת חוזים מול כלל האמנים', dueDate: '2026-03-26', owner: UNASSIGNED_OWNER, status: 'ממתין' },
-      { id: 'p100-3', title: 'הסטת כספי פיס (מול גלית)', dueDate: '2026-03-25', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
-      { id: 'p100-4', title: 'קידום רכב ה-100', dueDate: '2026-03-26', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
-      { id: 'p100-5', title: 'לוחות פרסום על עמודי חשמל', dueDate: '2026-03-26', owner: UNASSIGNED_OWNER, status: 'ממתין' },
+    topics: [
+      {
+        id: 'topic-100-brand',
+        name: 'מיתוג ופרסום',
+        tasks: [
+          { id: 'p100-1', title: 'סגירת לוגו ומיתוג לכלים', dueDate: '2026-03-26', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
+          { id: 'p100-4', title: 'קידום רכב ה-100', dueDate: '2026-03-26', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
+          { id: 'p100-5', title: 'לוחות פרסום על עמודי חשמל', dueDate: '2026-03-26', owner: UNASSIGNED_OWNER, status: 'ממתין' },
+        ],
+      },
+      {
+        id: 'topic-100-finance',
+        name: 'חוזים ותקציב',
+        tasks: [
+          { id: 'p100-2', title: 'סגירת חוזים מול כלל האמנים', dueDate: '2026-03-26', owner: UNASSIGNED_OWNER, status: 'ממתין' },
+          { id: 'p100-3', title: 'הסטת כספי פיס (מול גלית)', dueDate: '2026-03-25', owner: UNASSIGNED_OWNER, status: 'בטיפול' },
+        ],
+      },
     ],
   },
 ]
@@ -277,10 +283,7 @@ function createId(prefix: string) {
 }
 
 function getNowLabel() {
-  return new Intl.DateTimeFormat('he-IL', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  }).format(new Date())
+  return new Intl.DateTimeFormat('he-IL', { dateStyle: 'short', timeStyle: 'short' }).format(new Date())
 }
 
 function getWeekDates(dateString: string) {
@@ -296,11 +299,7 @@ function getWeekDates(dateString: string) {
 }
 
 function formatCalendarLabel(dateString: string) {
-  return new Intl.DateTimeFormat('he-IL', {
-    weekday: 'short',
-    day: '2-digit',
-    month: '2-digit',
-  }).format(new Date(`${dateString}T00:00:00`))
+  return new Intl.DateTimeFormat('he-IL', { weekday: 'short', day: '2-digit', month: '2-digit' }).format(new Date(`${dateString}T00:00:00`))
 }
 
 async function loadScript(id: string, src: string) {
@@ -315,10 +314,7 @@ async function loadScript(id: string, src: string) {
   }
   await new Promise<void>((resolve, reject) => {
     const script = document.createElement('script')
-    script.id = id
-    script.src = src
-    script.async = true
-    script.defer = true
+    script.id = id; script.src = src; script.async = true; script.defer = true
     script.addEventListener('load', () => { script.dataset.ready = 'true'; resolve() }, { once: true })
     script.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true })
     document.body.appendChild(script)
@@ -337,9 +333,7 @@ async function scheduleEmergencyNotification(urgentCount: number) {
   if (!reg) return
   new Notification('Bat Yam HQ — חירום', {
     body: `יש ${urgentCount} משימות דחופות פתוחות בתחום חירום`,
-    icon: '/icon.svg',
-    badge: '/icon.svg',
-    tag: 'emergency-daily',
+    icon: '/icon.svg', badge: '/icon.svg', tag: 'emergency-daily',
   })
 }
 
@@ -357,19 +351,16 @@ function App() {
   const googleTokenClientRef = useRef<ReturnType<NonNullable<NonNullable<NonNullable<typeof window.google>['accounts']>['oauth2']>['initTokenClient']> | null>(null)
   const googleAccessTokenRef = useRef('')
 
-  // ── Dark mode ─────────────────────────────────────────────────────────────
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     const saved = window.localStorage.getItem('bat-yam-dark')
     if (saved !== null) return saved === 'true'
     return window.matchMedia('(prefers-color-scheme: dark)').matches
   })
-
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode)
     window.localStorage.setItem('bat-yam-dark', String(darkMode))
   }, [darkMode])
 
-  // ── Core state ───────────────────────────────────────────────────────────
   const [domains, setDomains] = useState<Domain[]>(INITIAL_DOMAINS)
   const [processes, setProcesses] = useState<Process[]>(INITIAL_PROCESSES)
   const [events, setEvents] = useState<EventItem[]>(INITIAL_EVENTS)
@@ -387,13 +378,16 @@ function App() {
   const [bulkImportText, setBulkImportText] = useState('')
   const [bulkDomainId, setBulkDomainId] = useState('')
   const [bulkProcessId, setBulkProcessId] = useState('')
+  const [bulkTopicId, setBulkTopicId] = useState('')
   const [showProcessModal, setShowProcessModal] = useState<{ mode: 'create'; domainId: string } | { mode: 'edit'; process: Process } | null>(null)
   const [processForm, setProcessForm] = useState({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' })
+  const [showTopicModal, setShowTopicModal] = useState<{ processId: string; topicId?: string; name: string } | null>(null)
   const [calendarMode, setCalendarMode] = useState<CalendarMode>('week')
   const [selectedDate, setSelectedDate] = useState('2026-03-24')
   const [editingTask, setEditingTask] = useState<{
     domainId: string
-    processId: string   // '' = direct domain task
+    processId: string    // '' = direct domain task
+    topicId: string      // '' = direct domain task
     taskId: string
     title: string
     owner: string
@@ -401,22 +395,25 @@ function App() {
     status: TaskStatus
     notes?: string
     notesUpdatedAt?: string
-    newProcessId: string  // '' = direct, processId = in process (for reassignment)
+    newProcessId: string
+    newTopicId: string
   } | null>(null)
   const [showCompleted, setShowCompleted] = useState(false)
   const [filterStatus, setFilterStatus] = useState<'all' | TaskStatus>('all')
   const [filterDomain, setFilterDomain] = useState<string>('all')
   const [sortBy, setSortBy] = useState<SortField>('dueDate')
-  const [taskForm, setTaskForm] = useState({ title: '', dueDate: '', domainId: INITIAL_DOMAINS[0].id, processId: '', status: DEFAULT_STATUS })
+  const [taskForm, setTaskForm] = useState({
+    title: '', dueDate: '', domainId: INITIAL_DOMAINS[0].id,
+    processId: '', topicId: '', newTopicName: '', status: DEFAULT_STATUS,
+  })
   const [eventForm, setEventForm] = useState({ title: '', date: '', domainId: INITIAL_DOMAINS[0].id, description: '' })
 
   // ── Load from localStorage ───────────────────────────────────────────────
   useEffect(() => {
-    // Try new v7 key first
-    const saved = window.localStorage.getItem(STORAGE_KEY)
-    if (saved) {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (raw) {
       try {
-        const parsed = JSON.parse(saved) as PersistedState
+        const parsed = JSON.parse(raw) as PersistedState
         if (parsed.domains?.length) setDomains(sanitizeDomains(parsed.domains))
         if (parsed.processes?.length) setProcesses(sanitizeProcesses(parsed.processes))
         if (parsed.events?.length) setEvents(parsed.events)
@@ -429,86 +426,59 @@ function App() {
         window.localStorage.removeItem(STORAGE_KEY)
       }
     }
-    // Try migrating from v6
-    const oldSaved = window.localStorage.getItem(OLD_STORAGE_KEY)
-    if (oldSaved) {
+    // migrate from v7
+    const old = window.localStorage.getItem('bat-yam-hq-local-state-v7')
+    if (old) {
       try {
-        const parsed = JSON.parse(oldSaved) as { projects?: Array<{ id: string; name: string; color: string; tasks: Task[]; description?: string; milestones?: string; kpis?: string; stakeholders?: string; targetDate?: string }>; events?: Array<EventItem & { projectId?: string }>; activity?: ActivityItem[]; googleProfile?: GoogleProfile | null; selectedGoogleTaskListId?: string; googleEvents?: GoogleEvent[] }
-        if (parsed.projects?.length) {
-          // Map old projects to new structure
-          const newDomains: Domain[] = INITIAL_DOMAINS.map((d) => ({ ...d, tasks: [] }))
-          const newProcesses: Process[] = []
-          for (const proj of parsed.projects) {
-            if (proj.id === 'project-100') {
-              newProcesses.push({ id: 'proc-100', domainId: 'd-100', name: proj.name, color: proj.color, description: proj.description, milestones: proj.milestones, kpis: proj.kpis, stakeholders: proj.stakeholders, targetDate: proj.targetDate, tasks: sanitizeTasks(proj.tasks) })
-            } else {
-              const domainMap: Record<string, string> = { beach: 'd-beach', young: 'd-young', tzvika: 'd-tzvika', mayor: 'd-mayor', emergency: 'd-emergency' }
-              const did = domainMap[proj.id]
-              if (did) {
-                const idx = newDomains.findIndex((d) => d.id === did)
-                if (idx !== -1) newDomains[idx] = { ...newDomains[idx], tasks: sanitizeTasks(proj.tasks) }
-              }
-            }
-          }
-          setDomains(newDomains)
-          if (newProcesses.length) setProcesses(newProcesses)
-        }
-        if (parsed.events?.length) {
-          const migratedEvents: EventItem[] = parsed.events.map((ev) => {
-            const domainMap: Record<string, string> = { beach: 'd-beach', young: 'd-young', tzvika: 'd-tzvika', mayor: 'd-mayor', emergency: 'd-emergency', 'project-100': 'd-100' }
-            return { ...ev, domainId: (ev as EventItem & { projectId?: string }).projectId ? (domainMap[(ev as EventItem & { projectId?: string }).projectId!] ?? 'd-mayor') : ev.domainId }
-          })
-          setEvents(migratedEvents)
-        }
+        const parsed = JSON.parse(old) as PersistedState & { processes?: Array<Process & { tasks?: Task[] }> }
+        if (parsed.domains?.length) setDomains(sanitizeDomains(parsed.domains))
+        if (parsed.processes?.length) setProcesses(sanitizeProcesses(parsed.processes as unknown[]))
+        if (parsed.events?.length) setEvents(parsed.events)
         if (parsed.activity?.length) setActivity(parsed.activity)
         if (parsed.googleProfile) setGoogleProfile(parsed.googleProfile)
         if (parsed.selectedGoogleTaskListId) setSelectedGoogleTaskListId(parsed.selectedGoogleTaskListId)
         if (parsed.googleEvents) setGoogleEvents(parsed.googleEvents)
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
   }, [])
 
-  // ── Auto-save ────────────────────────────────────────────────────────────
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
       domains, processes, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents,
     }))
   }, [domains, processes, events, activity, googleProfile, selectedGoogleTaskListId, googleEvents])
 
-  // ── Auto-reconnect Google ─────────────────────────────────────────────────
   useEffect(() => {
     if (googleProfile && GOOGLE_CLIENT_ID) {
       ensureGoogleServices().then(() => {
-        if (!googleAccessTokenRef.current) {
-          requestGoogleAccessToken('').then(() => refreshGoogleTasksContext()).catch(() => {})
-        }
+        if (!googleAccessTokenRef.current) requestGoogleAccessToken('').then(() => refreshGoogleTasksContext()).catch(() => {})
       }).catch(() => {})
     }
   }, [googleProfile])
 
-  // ── PWA emergency notification ────────────────────────────────────────────
   const notifiedRef = useRef(false)
   useEffect(() => {
     if (notifiedRef.current) return
-    const emergencyDomain = domains.find((d) => d.id === 'd-emergency')
-    if (!emergencyDomain) return
-    const urgentCount = emergencyDomain.tasks.filter((t) => t.status !== 'בוצע').length
+    const urgentCount = domains.find((d) => d.id === 'd-emergency')?.tasks.filter((t) => t.status !== 'בוצע').length ?? 0
     if (urgentCount > 0) {
       notifiedRef.current = true
       window.addEventListener('click', () => scheduleEmergencyNotification(urgentCount), { once: true })
     }
   }, [domains])
 
-  // ─── Derived state ────────────────────────────────────────────────────────
+  // ─── Derived ──────────────────────────────────────────────────────────────
 
-  // Flat list of all tasks with domain/process info
   const allTasks = useMemo(() => [
-    ...domains.flatMap((d) => d.tasks.map((t) => ({ ...t, domainId: d.id, domainName: d.name, domainColor: d.color, processId: '', processName: '' }))),
+    ...domains.flatMap((d) => d.tasks.map((t) => ({
+      ...t, domainId: d.id, domainName: d.name, domainColor: d.color,
+      processId: '', processName: '', topicId: '', topicName: '',
+    }))),
     ...processes.flatMap((p) => {
       const domain = domains.find((d) => d.id === p.domainId)
-      return p.tasks.map((t) => ({ ...t, domainId: p.domainId, domainName: domain?.name ?? '', domainColor: domain?.color ?? p.color, processId: p.id, processName: p.name }))
+      return p.topics.flatMap((tp) => tp.tasks.map((t) => ({
+        ...t, domainId: p.domainId, domainName: domain?.name ?? '', domainColor: domain?.color ?? p.color,
+        processId: p.id, processName: p.name, topicId: tp.id, topicName: tp.name,
+      })))
     }),
   ], [domains, processes])
 
@@ -520,32 +490,49 @@ function App() {
 
   const sortedEvents = [...events].sort((a, b) => a.date.localeCompare(b.date))
   const weekDates = getWeekDates(selectedDate)
-
   const calendarEntries = (calendarMode === 'day' ? [selectedDate] : weekDates).map((date) => ({
-    label: formatCalendarLabel(date),
-    date,
+    label: formatCalendarLabel(date), date,
     events: sortedEvents.filter((e) => e.date === date),
-    googleEvents: googleEvents.filter((ge) => {
-      const d = ge.start?.date || ge.start?.dateTime?.slice(0, 10)
-      return d === date
-    }),
+    googleEvents: googleEvents.filter((ge) => (ge.start?.date || ge.start?.dateTime?.slice(0, 10)) === date),
   }))
-
   const selectedGoogleTaskList = googleTasksLists.find((l) => l.id === selectedGoogleTaskListId)
 
-  // Processes filtered by domain
-  const domainProcesses = useMemo(() => (domainId: string) => processes.filter((p) => p.domainId === domainId), [processes])
+  const visibleDomains = useMemo(() => {
+    return domains
+      .filter((d) => filterDomain === 'all' || d.id === filterDomain)
+      .map((d) => {
+        let directTasks = filterStatus === 'all' ? d.tasks : d.tasks.filter((t) => t.status === filterStatus)
+        if (!showCompleted) directTasks = directTasks.filter((t) => t.status !== 'בוצע')
+        directTasks = sortTasks(directTasks, sortBy)
+        const domainProcs = processes
+          .filter((p) => p.domainId === d.id)
+          .map((p) => ({
+            ...p,
+            topics: p.topics.map((tp) => {
+              let tasks = filterStatus === 'all' ? tp.tasks : tp.tasks.filter((t) => t.status === filterStatus)
+              if (!showCompleted) tasks = tasks.filter((t) => t.status !== 'בוצע')
+              return { ...tp, tasks: sortTasks(tasks, sortBy) }
+            }).filter((tp) => tp.tasks.length > 0),
+          }))
+          .filter((p) => p.topics.length > 0)
+        return { ...d, tasks: directTasks, domainProcs }
+      })
+      .filter((d) => d.tasks.length > 0 || d.domainProcs.length > 0)
+  }, [domains, processes, filterDomain, filterStatus, showCompleted, sortBy])
 
   // ─── Mutations ────────────────────────────────────────────────────────────
 
   const appendActivity = (action: string, details: string) =>
-    setActivity((cur) => [{ id: createId('activity'), action, details, createdAt: getNowLabel() }, ...cur])
+    setActivity((cur) => [{ id: createId('ac'), action, details, createdAt: getNowLabel() }, ...cur])
 
-  // Update a task in domains or processes
-  const updateTaskInPlace = (domainId: string, processId: string, taskId: string, updater: (t: Task) => Task) => {
-    if (processId) {
+  const updateTaskInPlace = (domainId: string, processId: string, topicId: string, taskId: string, updater: (t: Task) => Task) => {
+    if (processId && topicId) {
       setProcesses((cur) => cur.map((p) =>
-        p.id !== processId ? p : { ...p, tasks: p.tasks.map((t) => t.id === taskId ? updater(t) : t) }
+        p.id !== processId ? p : {
+          ...p, topics: p.topics.map((tp) =>
+            tp.id !== topicId ? tp : { ...tp, tasks: tp.tasks.map((t) => t.id === taskId ? updater(t) : t) }
+          ),
+        }
       ))
     } else {
       setDomains((cur) => cur.map((d) =>
@@ -554,16 +541,21 @@ function App() {
     }
   }
 
-  const updateTaskStatus = (domainId: string, processId: string, taskId: string, nextStatus: TaskStatus) =>
-    updateTaskInPlace(domainId, processId, taskId, (t) => ({ ...t, status: nextStatus }))
+  const updateTaskStatus = (domainId: string, processId: string, topicId: string, taskId: string, nextStatus: TaskStatus) =>
+    updateTaskInPlace(domainId, processId, topicId, taskId, (t) => ({ ...t, status: nextStatus }))
 
-  const deleteTask = (domainId: string, processId: string, taskId: string) => {
+  const deleteTask = (domainId: string, processId: string, topicId: string, taskId: string) => {
     let title = ''
-    if (processId) {
+    if (processId && topicId) {
       setProcesses((cur) => cur.map((p) => {
         if (p.id !== processId) return p
-        title = p.tasks.find((t) => t.id === taskId)?.title ?? ''
-        return { ...p, tasks: p.tasks.filter((t) => t.id !== taskId) }
+        return {
+          ...p, topics: p.topics.map((tp) => {
+            if (tp.id !== topicId) return tp
+            title = tp.tasks.find((t) => t.id === taskId)?.title ?? ''
+            return { ...tp, tasks: tp.tasks.filter((t) => t.id !== taskId) }
+          }),
+        }
       }))
     } else {
       setDomains((cur) => cur.map((d) => {
@@ -572,14 +564,14 @@ function App() {
         return { ...d, tasks: d.tasks.filter((t) => t.id !== taskId) }
       }))
     }
-    if (title) appendActivity('מחיקת משימה', `המשימה "${title}" נמחקה`)
+    if (title) appendActivity('מחיקת משימה', `"${title}" נמחקה`)
   }
 
-  const cycleStatus = (domainId: string, processId: string, taskId: string) => {
+  const cycleStatus = (domainId: string, processId: string, topicId: string, taskId: string) => {
     const task = allTasks.find((t) => t.id === taskId)
     if (!task) return
     const nextStatus = STATUS_ORDER[(STATUS_ORDER.indexOf(task.status) + 1) % STATUS_ORDER.length]
-    updateTaskStatus(domainId, processId, taskId, nextStatus)
+    updateTaskStatus(domainId, processId, topicId, taskId, nextStatus)
     appendActivity('עדכון סטטוס', `${task.title} → ${nextStatus}`)
   }
 
@@ -587,35 +579,67 @@ function App() {
     e.preventDefault()
     if (!taskForm.title.trim() || !taskForm.dueDate) return
     const next: Task = { id: createId('task'), title: taskForm.title.trim(), dueDate: taskForm.dueDate, owner: UNASSIGNED_OWNER, status: taskForm.status }
+
     if (taskForm.processId) {
+      let targetTopicId = taskForm.topicId
+      // create new topic inline if requested
+      if (!targetTopicId && taskForm.newTopicName.trim()) {
+        targetTopicId = createId('topic')
+        setProcesses((cur) => cur.map((p) =>
+          p.id !== taskForm.processId ? p : { ...p, topics: [...p.topics, { id: targetTopicId, name: taskForm.newTopicName.trim(), tasks: [next] }] }
+        ))
+        appendActivity('נושא חדש', `"${taskForm.newTopicName.trim()}" נוצר`)
+      } else if (targetTopicId) {
+        setProcesses((cur) => cur.map((p) =>
+          p.id !== taskForm.processId ? p : {
+            ...p, topics: p.topics.map((tp) =>
+              tp.id !== targetTopicId ? tp : { ...tp, tasks: [next, ...tp.tasks] }
+            ),
+          }
+        ))
+      } else {
+        // no topic - add first existing or create default
+        const proc = processes.find((p) => p.id === taskForm.processId)
+        if (proc?.topics.length) {
+          const firstId = proc.topics[0].id
+          setProcesses((cur) => cur.map((p) =>
+            p.id !== taskForm.processId ? p : {
+              ...p, topics: p.topics.map((tp, i) => i === 0 ? { ...tp, tasks: [next, ...tp.tasks] } : tp),
+            }
+          ))
+          void firstId
+        } else {
+          const newTopicId = createId('topic')
+          setProcesses((cur) => cur.map((p) =>
+            p.id !== taskForm.processId ? p : { ...p, topics: [{ id: newTopicId, name: 'כללי', tasks: [next] }] }
+          ))
+        }
+      }
       const proc = processes.find((p) => p.id === taskForm.processId)
-      if (!proc) return
-      setProcesses((cur) => cur.map((p) => p.id === taskForm.processId ? { ...p, tasks: [next, ...p.tasks] } : p))
-      appendActivity('יצירת משימה', `נוספה "${next.title}" לתהליך ${proc.name}`)
+      appendActivity('יצירת משימה', `נוספה "${next.title}" לתהליך ${proc?.name ?? ''}`)
     } else {
       const domain = domains.find((d) => d.id === taskForm.domainId)
-      if (!domain) return
       setDomains((cur) => cur.map((d) => d.id === taskForm.domainId ? { ...d, tasks: [next, ...d.tasks] } : d))
-      appendActivity('יצירת משימה', `נוספה "${next.title}" לתחום ${domain.name}`)
+      appendActivity('יצירת משימה', `נוספה "${next.title}" לתחום ${domain?.name ?? ''}`)
     }
-    setTaskForm((cur) => ({ ...cur, title: '', dueDate: '', status: DEFAULT_STATUS }))
+    setTaskForm((c) => ({ ...c, title: '', dueDate: '', status: DEFAULT_STATUS, topicId: '', newTopicName: '' }))
   }
 
   const handleEventSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!eventForm.title.trim() || !eventForm.date || !eventForm.description.trim()) return
     const domain = domains.find((d) => d.id === eventForm.domainId)
-    const next: EventItem = { id: createId('event'), title: eventForm.title.trim(), date: eventForm.date, domainId: eventForm.domainId, description: eventForm.description.trim(), createdAt: getNowLabel() }
+    const next: EventItem = { id: createId('ev'), title: eventForm.title.trim(), date: eventForm.date, domainId: eventForm.domainId, description: eventForm.description.trim(), createdAt: getNowLabel() }
     setEvents((cur) => [next, ...cur])
     appendActivity('אירוע חדש', `נוסף "${next.title}" עבור ${domain?.name ?? '?'}`)
-    setEventForm((cur) => ({ ...cur, title: '', date: '', description: '' }))
+    setEventForm((c) => ({ ...c, title: '', date: '', description: '' }))
   }
 
   const handleProcessSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!processForm.name.trim()) return
     if (showProcessModal?.mode === 'create') {
-      const p: Process = { id: createId('proc'), domainId: showProcessModal.domainId, name: processForm.name.trim(), color: processForm.color, description: processForm.description.trim() || undefined, milestones: processForm.milestones.trim() || undefined, kpis: processForm.kpis.trim() || undefined, stakeholders: processForm.stakeholders.trim() || undefined, targetDate: processForm.targetDate || undefined, tasks: [] }
+      const p: Process = { id: createId('proc'), domainId: showProcessModal.domainId, name: processForm.name.trim(), color: processForm.color, description: processForm.description.trim() || undefined, milestones: processForm.milestones.trim() || undefined, kpis: processForm.kpis.trim() || undefined, stakeholders: processForm.stakeholders.trim() || undefined, targetDate: processForm.targetDate || undefined, topics: [] }
       setProcesses((cur) => [...cur, p])
       appendActivity('תהליך חדש', `נוצר "${p.name}"`)
     } else if (showProcessModal?.mode === 'edit') {
@@ -632,14 +656,36 @@ function App() {
     const proc = processes.find((p) => p.id === processId)
     if (!proc) return
     if (!confirm('למחוק תהליך זה? המשימות יועברו לתחום הישיר.')) return
-    // Move tasks to domain direct tasks
-    if (proc.tasks.length > 0) {
-      setDomains((cur) => cur.map((d) =>
-        d.id !== proc.domainId ? d : { ...d, tasks: [...proc.tasks, ...d.tasks] }
-      ))
+    const movedTasks = proc.topics.flatMap((tp) => tp.tasks)
+    if (movedTasks.length) {
+      setDomains((cur) => cur.map((d) => d.id !== proc.domainId ? d : { ...d, tasks: [...movedTasks, ...d.tasks] }))
     }
     setProcesses((cur) => cur.filter((p) => p.id !== processId))
     appendActivity('מחיקת תהליך', `"${proc.name}" נמחק`)
+  }
+
+  const addTopic = (processId: string, name: string) => {
+    const newTopic: Topic = { id: createId('topic'), name: name.trim(), tasks: [] }
+    setProcesses((cur) => cur.map((p) => p.id !== processId ? p : { ...p, topics: [...p.topics, newTopic] }))
+    appendActivity('נושא חדש', `"${name}" נוצר`)
+  }
+
+  const renameTopic = (processId: string, topicId: string, name: string) => {
+    setProcesses((cur) => cur.map((p) =>
+      p.id !== processId ? p : { ...p, topics: p.topics.map((tp) => tp.id !== topicId ? tp : { ...tp, name }) }
+    ))
+  }
+
+  const deleteTopic = (processId: string, topicId: string) => {
+    const proc = processes.find((p) => p.id === processId)
+    const topic = proc?.topics.find((tp) => tp.id === topicId)
+    if (!proc || !topic) return
+    if (!confirm(`למחוק נושא "${topic.name}"? המשימות יועברו לתחום הישיר.`)) return
+    if (topic.tasks.length) {
+      setDomains((cur) => cur.map((d) => d.id !== proc.domainId ? d : { ...d, tasks: [...topic.tasks, ...d.tasks] }))
+    }
+    setProcesses((cur) => cur.map((p) => p.id !== processId ? p : { ...p, topics: p.topics.filter((tp) => tp.id !== topicId) }))
+    appendActivity('מחיקת נושא', `"${topic.name}" נמחק`)
   }
 
   const handleBulkImport = (e: React.FormEvent) => {
@@ -649,51 +695,58 @@ function App() {
     const lines = bulkImportText.split('\n').map((l) => l.replace(/^[-*•\d.\s[\]]+/, '').trim()).filter(Boolean)
     if (!lines.length) return
     const newTasks: Task[] = lines.map((title) => ({ id: createId('task-bulk'), title, status: DEFAULT_STATUS, dueDate: new Date().toISOString().slice(0, 10), owner: UNASSIGNED_OWNER }))
-    if (bulkProcessId) {
-      setProcesses((cur) => cur.map((p) => p.id === bulkProcessId ? { ...p, tasks: [...newTasks, ...p.tasks] } : p))
+    if (bulkProcessId && bulkTopicId) {
+      setProcesses((cur) => cur.map((p) =>
+        p.id !== bulkProcessId ? p : {
+          ...p, topics: p.topics.map((tp) =>
+            tp.id !== bulkTopicId ? tp : { ...tp, tasks: [...newTasks, ...tp.tasks] }
+          ),
+        }
+      ))
+    } else if (bulkProcessId) {
+      // add to first topic or create one
+      const proc = processes.find((p) => p.id === bulkProcessId)
+      if (proc?.topics.length) {
+        setProcesses((cur) => cur.map((p) =>
+          p.id !== bulkProcessId ? p : { ...p, topics: p.topics.map((tp, i) => i === 0 ? { ...tp, tasks: [...newTasks, ...tp.tasks] } : tp) }
+        ))
+      } else {
+        setProcesses((cur) => cur.map((p) =>
+          p.id !== bulkProcessId ? p : { ...p, topics: [{ id: createId('topic'), name: 'כללי', tasks: newTasks }] }
+        ))
+      }
     } else {
       setDomains((cur) => cur.map((d) => d.id === targetDomainId ? { ...d, tasks: [...newTasks, ...d.tasks] } : d))
     }
     appendActivity('ייבוא המוני', `יובאו ${newTasks.length} משימות`)
     setShowGlobalAddModal(false)
-    setBulkImportText('')
-    setBulkDomainId('')
-    setBulkProcessId('')
+    setBulkImportText(''); setBulkDomainId(''); setBulkProcessId(''); setBulkTopicId('')
   }
 
   const resetFilters = () => { setFilterDomain('all'); setFilterStatus('all'); setSortBy('dueDate') }
 
-  const startEditingTask = (domainId: string, processId: string, task: Task) =>
-    setEditingTask({ domainId, processId, taskId: task.id, title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status, notes: task.notes || '', notesUpdatedAt: task.notesUpdatedAt, newProcessId: processId })
+  const startEditingTask = (domainId: string, processId: string, topicId: string, task: Task) =>
+    setEditingTask({ domainId, processId, topicId, taskId: task.id, title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status, notes: task.notes || '', notesUpdatedAt: task.notesUpdatedAt, newProcessId: processId, newTopicId: topicId })
 
   const saveTaskEdits = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!editingTask) return
-    const { domainId, processId, taskId, newProcessId } = editingTask
-    const updated: Task = {
-      id: taskId,
-      title: editingTask.title.trim(),
-      owner: editingTask.owner.trim() || UNASSIGNED_OWNER,
-      dueDate: editingTask.dueDate,
-      status: editingTask.status,
-      notes: editingTask.notes?.trim() || undefined,
-      notesUpdatedAt: editingTask.notes !== (allTasks.find((t) => t.id === taskId)?.notes || '') ? getNowLabel() : editingTask.notesUpdatedAt,
-    }
+    const { domainId, processId, topicId, taskId, newProcessId, newTopicId } = editingTask
+    const updated: Task = { id: taskId, title: editingTask.title.trim(), owner: editingTask.owner.trim() || UNASSIGNED_OWNER, dueDate: editingTask.dueDate, status: editingTask.status, notes: editingTask.notes?.trim() || undefined, notesUpdatedAt: getNowLabel() }
     if (!updated.title || !updated.dueDate) return
-
-    const isMoving = newProcessId !== processId
+    const isMoving = newProcessId !== processId || newTopicId !== topicId
     if (!isMoving) {
-      // In-place update
-      updateTaskInPlace(domainId, processId, taskId, () => updated)
+      updateTaskInPlace(domainId, processId, topicId, taskId, () => updated)
     } else {
-      // Remove from old container, add to new container
-      if (processId) {
-        setProcesses((cur) => cur.map((p) => p.id !== processId ? p : { ...p, tasks: p.tasks.filter((t) => t.id !== taskId) }))
+      // remove from old
+      if (processId && topicId) {
+        setProcesses((cur) => cur.map((p) => p.id !== processId ? p : { ...p, topics: p.topics.map((tp) => tp.id !== topicId ? tp : { ...tp, tasks: tp.tasks.filter((t) => t.id !== taskId) }) }))
       } else {
         setDomains((cur) => cur.map((d) => d.id !== domainId ? d : { ...d, tasks: d.tasks.filter((t) => t.id !== taskId) }))
       }
-      if (newProcessId) {
-        setProcesses((cur) => cur.map((p) => p.id !== newProcessId ? p : { ...p, tasks: [updated, ...p.tasks] }))
+      // add to new
+      if (newProcessId && newTopicId) {
+        setProcesses((cur) => cur.map((p) => p.id !== newProcessId ? p : { ...p, topics: p.topics.map((tp) => tp.id !== newTopicId ? tp : { ...tp, tasks: [updated, ...tp.tasks] }) }))
       } else {
         setDomains((cur) => cur.map((d) => d.id !== domainId ? d : { ...d, tasks: [updated, ...d.tasks] }))
       }
@@ -719,8 +772,7 @@ function App() {
     return new Promise<string>((resolve, reject) => {
       googleTokenClientRef.current!.callback = (response) => {
         if (response.error || !response.access_token) { reject(new Error(response.error_description || response.error || 'נכשל.')); return }
-        googleAccessTokenRef.current = response.access_token
-        resolve(response.access_token)
+        googleAccessTokenRef.current = response.access_token; resolve(response.access_token)
       }
       googleTokenClientRef.current!.error_callback = () => reject(new Error('בוטל.'))
       googleTokenClientRef.current!.requestAccessToken({ prompt: googleAccessTokenRef.current ? '' : prompt || 'consent' })
@@ -780,13 +832,12 @@ function App() {
     if (!selectedGoogleTaskListId) { setGoogleMessage('יש לבחור רשימה.'); return }
     setGoogleTasksBusy(true)
     try {
-      // Collect tasks from the selected source
       const sourceDomain = domains.find((d) => d.id === syncSourceId)
       const sourceProcess = processes.find((p) => p.id === syncSourceId)
-      const sourceName = sourceDomain?.name ?? sourceProcess?.name ?? 'לא ידוע'
+      const sourceName = sourceDomain?.name ?? sourceProcess?.name ?? ''
       const sourceTasks = sourceDomain
-        ? [...sourceDomain.tasks, ...processes.filter((p) => p.domainId === sourceDomain.id).flatMap((p) => p.tasks)]
-        : (sourceProcess?.tasks ?? [])
+        ? [...sourceDomain.tasks, ...processes.filter((p) => p.domainId === sourceDomain.id).flatMap((p) => p.topics.flatMap((tp) => tp.tasks))]
+        : (sourceProcess?.topics.flatMap((tp) => tp.tasks) ?? [])
       const existing = await googleApiRequest<{ items?: Array<{ title: string }> }>(`https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(selectedGoogleTaskListId)}/tasks?showCompleted=true&showHidden=true&maxResults=100`)
       const existingTitles = new Set((existing.items ?? []).map((t) => t.title))
       const pending = sourceTasks.filter((t) => !existingTitles.has(`${sourceName} | ${t.title}`))
@@ -806,88 +857,47 @@ function App() {
     setGoogleMessage('החיבור הוסר.')
   }
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  // ─── Sub-components ───────────────────────────────────────────────────────
 
-  // For dashboard list view: per-domain view
-  const visibleDomains = useMemo(() => {
-    return domains
-      .filter((d) => filterDomain === 'all' || d.id === filterDomain)
-      .map((d) => {
-        let directTasks = filterStatus === 'all' ? d.tasks : d.tasks.filter((t) => t.status === filterStatus)
-        if (!showCompleted) directTasks = directTasks.filter((t) => t.status !== 'בוצע')
-        directTasks = sortTasks(directTasks, sortBy)
-        const domainProcs = processes
-          .filter((p) => p.domainId === d.id)
-          .map((p) => {
-            let procTasks = filterStatus === 'all' ? p.tasks : p.tasks.filter((t) => t.status === filterStatus)
-            if (!showCompleted) procTasks = procTasks.filter((t) => t.status !== 'בוצע')
-            procTasks = sortTasks(procTasks, sortBy)
-            return { ...p, tasks: procTasks }
-          })
-          .filter((p) => p.tasks.length > 0)
-        return { ...d, tasks: directTasks, domainProcs }
-      })
-      .filter((d) => d.tasks.length > 0 || d.domainProcs.length > 0)
-  }, [domains, processes, filterDomain, filterStatus, showCompleted, sortBy])
-
-  const openEditProcessModal = (proc: Process) => {
-    setProcessForm({ name: proc.name, description: proc.description || '', color: proc.color, milestones: proc.milestones || '', kpis: proc.kpis || '', stakeholders: proc.stakeholders || '', targetDate: proc.targetDate || '' })
-    setShowProcessModal({ mode: 'edit', process: proc })
-  }
-
-  const openCreateProcessModal = (domainId: string) => {
-    setProcessForm({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' })
-    setShowProcessModal({ mode: 'create', domainId })
-  }
-
-  const TaskRow = ({ task, domainId, processId, domainColor }: { task: Task; domainId: string; processId: string; domainColor: string }) => {
+  const TaskRow = ({ task, domainId, processId, topicId, accentColor }: { task: Task; domainId: string; processId: string; topicId: string; accentColor: string }) => {
     const meta = STATUS_META[normalizeTaskStatus(task.status)]
     const isDone = task.status === 'בוצע'
     return (
-      <article className="task-row" key={task.id} style={{ opacity: isDone ? 0.6 : 1 }}>
+      <article className="task-row" style={{ opacity: isDone ? 0.6 : 1 }}>
         <div className="task-main-wrap">
           <input
             type="checkbox"
             className="task-list-checkbox"
             checked={isDone}
-            onChange={(e) => updateTaskStatus(domainId, processId, task.id, e.target.checked ? 'בוצע' : DEFAULT_STATUS)}
+            onChange={(e) => updateTaskStatus(domainId, processId, topicId, task.id, e.target.checked ? 'בוצע' : DEFAULT_STATUS)}
           />
           <div className="task-main">
             <h4 style={{ textDecoration: isDone ? 'line-through' : 'none' }}>{task.title}</h4>
             <p>שיוך: {task.owner} | יעד: {task.dueDate}</p>
-            {task.notes && (
-              <p style={{ fontSize: '13px', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '500px' }}>
-                📝 {task.notes}
-              </p>
-            )}
+            {task.notes && <p style={{ fontSize: '13px', marginTop: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '500px' }}>📝 {task.notes}</p>}
           </div>
         </div>
         <div className="task-actions">
-          <button type="button" className="ghost-button small-button" onClick={() => startEditingTask(domainId, processId, task)}>עריכה</button>
-          <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteTask(domainId, processId, task.id)}>מחיקה</button>
-          <button type="button" className={`status-pill ${meta.tone}`} onClick={() => cycleStatus(domainId, processId, task.id)} style={{ borderColor: domainColor }}>{meta.label}</button>
+          <button type="button" className="ghost-button small-button" onClick={() => startEditingTask(domainId, processId, topicId, task)}>עריכה</button>
+          <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteTask(domainId, processId, topicId, task.id)}>מחיקה</button>
+          <button type="button" className={`status-pill ${meta.tone}`} onClick={() => cycleStatus(domainId, processId, topicId, task.id)} style={{ borderColor: accentColor }}>{meta.label}</button>
         </div>
       </article>
     )
   }
 
+  // ─── Render ───────────────────────────────────────────────────────────────
+
   return (
     <div className="app-shell" dir="rtl">
-      {/* ── Header ── */}
       <header className="topbar">
         <div>
           <p className="eyebrow">מטה משימות</p>
           <h1>לוח ניהול עירוני</h1>
-          <p className="subhead">מערכת מקומית עם חיבור ל-Google Calendar ול-Google Tasks.</p>
+          <p className="subhead">תחומים · תהליכים · נושאים · משימות</p>
         </div>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className="ghost-button small-button"
-            onClick={() => setDarkMode((d) => !d)}
-            title={darkMode ? 'מצב בהיר' : 'מצב כהה'}
-            style={{ fontSize: '20px', padding: '8px 12px', borderRadius: '12px' }}
-          >
+          <button type="button" className="ghost-button small-button" onClick={() => setDarkMode((d) => !d)} title={darkMode ? 'מצב בהיר' : 'מצב כהה'} style={{ fontSize: '20px', padding: '8px 12px', borderRadius: '12px' }}>
             {darkMode ? '☀️' : '🌙'}
           </button>
           <div className="summary-chip">
@@ -911,7 +921,7 @@ function App() {
           <section className="hero-card">
             <div>
               <h2>לוח אישי וקומפקטי</h2>
-              <p>סינון לפי תחום ותהליך, תצוגת רשימה היררכית ותצוגת קנבן.</p>
+              <p>היררכיה: תחום → תהליך → נושא → משימות</p>
             </div>
             <div className="hero-metrics">
               <span>פתוחות: {openTasks}</span>
@@ -952,18 +962,15 @@ function App() {
                 <button type="button" className={`ghost-button compact-action ${showCompleted ? 'active' : ''}`} onClick={() => setShowCompleted((v) => !v)} style={{ alignSelf: 'flex-end' }}>
                   {showCompleted ? 'הסתר בוצעו' : 'הצג בוצעו'}
                 </button>
-                <button type="button" className="ghost-button compact-action" onClick={resetFilters} style={{ alignSelf: 'flex-end' }}>
-                  נקה סינון
-                </button>
+                <button type="button" className="ghost-button compact-action" onClick={resetFilters} style={{ alignSelf: 'flex-end' }}>נקה סינון</button>
               </div>
             </div>
           </section>
 
-          {/* List view — domain → process → tasks hierarchy */}
           {dashboardLayout === 'list' ? (
             visibleDomains.map((domain) => {
-              const domainAllTasks = [...domain.tasks, ...domain.domainProcs.flatMap((p) => p.tasks)]
-              const donePct = domainAllTasks.length === 0 ? 0 : Math.round((domainAllTasks.filter((t) => t.status === 'בוצע').length / domainAllTasks.length) * 100)
+              const allDomainTasks = [...domain.tasks, ...domain.domainProcs.flatMap((p) => p.topics.flatMap((tp) => tp.tasks))]
+              const donePct = allDomainTasks.length === 0 ? 0 : Math.round((allDomainTasks.filter((t) => t.status === 'בוצע').length / allDomainTasks.length) * 100)
               const barColor = progressColor(donePct)
               return (
                 <section className="project-card" key={domain.id} style={{ borderTop: `4px solid ${domain.color}` }}>
@@ -979,39 +986,44 @@ function App() {
                         </div>
                         <span style={{ fontSize: '12px', color: barColor, fontWeight: 700 }}>{donePct}%</span>
                       </div>
-                      <span className="task-count">{domainAllTasks.length} פריטים</span>
+                      <span className="task-count">{allDomainTasks.length} פריטים</span>
                     </div>
                   </div>
 
                   {/* Direct domain tasks */}
                   {domain.tasks.length > 0 && (
-                    <div className="task-list">
-                      {domain.tasks.map((task) => (
-                        <TaskRow key={task.id} task={task} domainId={domain.id} processId="" domainColor={domain.color} />
-                      ))}
+                    <div className="task-list" style={{ marginTop: '8px' }}>
+                      {domain.tasks.map((task) => <TaskRow key={task.id} task={task} domainId={domain.id} processId="" topicId="" accentColor={domain.color} />)}
                     </div>
                   )}
 
-                  {/* Processes within domain */}
+                  {/* Processes with topics */}
                   {domain.domainProcs.map((proc) => (
-                    <div key={proc.id} style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px dashed var(--surface-border)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                        <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: proc.color, display: 'inline-block' }} />
-                        <span style={{ fontWeight: 600, fontSize: '14px' }}>תהליך: {proc.name}</span>
-                        <span className="task-count" style={{ marginRight: 'auto' }}>{proc.tasks.length} משימות</span>
+                    <div key={proc.id} style={{ marginTop: '20px', paddingTop: '14px', borderTop: '1px dashed var(--surface-border)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                        <span style={{ width: '11px', height: '11px', borderRadius: '3px', backgroundColor: proc.color, display: 'inline-block' }} />
+                        <span style={{ fontWeight: 700, fontSize: '15px' }}>{proc.name}</span>
                       </div>
-                      <div className="task-list">
-                        {proc.tasks.map((task) => (
-                          <TaskRow key={task.id} task={task} domainId={domain.id} processId={proc.id} domainColor={proc.color} />
-                        ))}
-                      </div>
+
+                      {/* Topics within process */}
+                      {proc.topics.map((topic) => (
+                        <div key={topic.id} style={{ marginBottom: '14px', marginRight: '16px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: proc.color, letterSpacing: '0.5px' }}>נושא:</span>
+                            <span style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-secondary)' }}>{topic.name}</span>
+                            <span className="task-count" style={{ marginRight: 'auto' }}>{topic.tasks.length}</span>
+                          </div>
+                          <div className="task-list">
+                            {topic.tasks.map((task) => <TaskRow key={task.id} task={task} domainId={domain.id} processId={proc.id} topicId={topic.id} accentColor={proc.color} />)}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </section>
               )
             })
           ) : (
-            /* Kanban view */
             <div className="kanban-board">
               {STATUS_ORDER.map((col) => {
                 const colTasks = allTasks.filter(
@@ -1022,41 +1034,22 @@ function App() {
                 )
                 return (
                   <div className="kanban-column" key={col}>
-                    <div className="kanban-column-header">
-                      <span>{col}</span>
-                      <span className="kanban-column-count">{colTasks.length}</span>
-                    </div>
-                    <div
-                      className="kanban-dropzone"
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        e.preventDefault()
-                        const data = e.dataTransfer.getData('text/plain')
-                        if (!data) return
-                        const { dId, pId, tId } = JSON.parse(data)
-                        if (tId) updateTaskStatus(dId, pId ?? '', tId, col)
-                      }}
-                    >
+                    <div className="kanban-column-header"><span>{col}</span><span className="kanban-column-count">{colTasks.length}</span></div>
+                    <div className="kanban-dropzone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const data = e.dataTransfer.getData('text/plain'); if (!data) return; const { dId, pId, tpId, tId } = JSON.parse(data); if (tId) updateTaskStatus(dId, pId ?? '', tpId ?? '', tId, col) }}>
                       {colTasks.map((task) => (
-                        <div
-                          key={task.id}
-                          className="kanban-task-card"
-                          draggable
-                          onDragStart={(e) => e.dataTransfer.setData('text/plain', JSON.stringify({ dId: task.domainId, pId: task.processId || null, tId: task.id }))}
-                        >
+                        <div key={task.id} className="kanban-task-card" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', JSON.stringify({ dId: task.domainId, pId: task.processId || null, tpId: task.topicId || null, tId: task.id }))}>
                           <div className="kanban-task-meta">
-                            <span style={{ color: task.domainColor, fontWeight: 600 }}>{task.processName ? `${task.domainName} / ${task.processName}` : task.domainName}</span>
+                            <span style={{ color: task.domainColor, fontWeight: 600 }}>
+                              {task.processName ? `${task.domainName} › ${task.processName}` : task.domainName}
+                              {task.topicName ? ` › ${task.topicName}` : ''}
+                            </span>
                             <span>{task.dueDate}</span>
                           </div>
                           <div className="kanban-task-title">{task.title}</div>
-                          {task.notes && (
-                            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              📝 {task.notes}
-                            </div>
-                          )}
+                          {task.notes && <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>📝 {task.notes}</div>}
                           <div className="kanban-task-actions">
-                            <button type="button" className="ghost-button small-button" onClick={() => startEditingTask(task.domainId, task.processId, task as Task)}>עריכה</button>
-                            <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteTask(task.domainId, task.processId, task.id)}>מחיקה</button>
+                            <button type="button" className="ghost-button small-button" onClick={() => startEditingTask(task.domainId, task.processId, task.topicId, task as Task)}>עריכה</button>
+                            <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteTask(task.domainId, task.processId, task.topicId, task.id)}>מחיקה</button>
                           </div>
                         </div>
                       ))}
@@ -1072,52 +1065,43 @@ function App() {
       {/* ════════════════════ PROCESSES ════════════════════ */}
       {view === 'processes' && (
         <main className="board">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <h2 style={{ margin: 0 }}>ניהול תהליכים לפי תחומים</h2>
-          </div>
+          <h2 style={{ margin: '0 0 20px' }}>ניהול תהליכים לפי תחומים</h2>
 
           {domains.map((domain) => {
-            const domainProcs = domainProcesses(domain.id)
+            const domainProcs = processes.filter((p) => p.domainId === domain.id)
             return (
-              <section key={domain.id} style={{ marginBottom: '32px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px', borderBottom: `3px solid ${domain.color}`, paddingBottom: '10px' }}>
+              <section key={domain.id} style={{ marginBottom: '36px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', borderBottom: `3px solid ${domain.color}`, paddingBottom: '10px' }}>
                   <span style={{ width: '14px', height: '14px', borderRadius: '50%', backgroundColor: domain.color, display: 'inline-block' }} />
                   <h3 style={{ margin: 0, fontSize: '18px' }}>{domain.name}</h3>
-                  <span className="task-count">{domain.tasks.length} משימות ישירות</span>
-                  <button
-                    type="button"
-                    className="primary-button small-button"
-                    style={{ marginRight: 'auto', backgroundColor: domain.color }}
-                    onClick={() => openCreateProcessModal(domain.id)}
-                  >
+                  <button type="button" className="primary-button small-button" style={{ marginRight: 'auto', backgroundColor: domain.color }} onClick={() => { setProcessForm({ name: '', description: '', color: domain.color, milestones: '', kpis: '', stakeholders: '', targetDate: '' }); setShowProcessModal({ mode: 'create', domainId: domain.id }) }}>
                     + תהליך חדש
                   </button>
                 </div>
 
-                {domainProcs.length === 0 && (
-                  <p className="muted-line" style={{ paddingRight: '8px' }}>אין תהליכים בתחום זה.</p>
-                )}
+                {domainProcs.length === 0 && <p className="muted-line" style={{ paddingRight: '8px' }}>אין תהליכים בתחום זה.</p>}
 
                 {domainProcs.map((proc) => {
-                  const done = proc.tasks.filter((t) => t.status === 'בוצע').length
-                  const pct = proc.tasks.length === 0 ? 0 : Math.round((done / proc.tasks.length) * 100)
+                  const procTasks = proc.topics.flatMap((tp) => tp.tasks)
+                  const done = procTasks.filter((t) => t.status === 'בוצע').length
+                  const pct = procTasks.length === 0 ? 0 : Math.round((done / procTasks.length) * 100)
                   const barColor = progressColor(pct)
 
                   return (
-                    <section className="panel process-card" key={proc.id} style={{ marginBottom: '16px' }}>
+                    <section className="panel process-card" key={proc.id} style={{ marginBottom: '20px' }}>
                       <div className="process-header" style={{ alignItems: 'flex-start' }}>
-                        <div>
-                          <div className="project-title" style={{ marginBottom: '8px' }}>
+                        <div style={{ flex: 1 }}>
+                          <div className="project-title" style={{ marginBottom: '6px' }}>
                             <span className="project-dot" style={{ backgroundColor: proc.color }} />
                             <h4 style={{ margin: 0 }}>{proc.name}</h4>
                           </div>
-                          {proc.description && <p style={{ margin: '0 0 12px 0', maxWidth: '600px', lineHeight: 1.5, fontSize: '14px' }}>{proc.description}</p>}
-                          <p className="muted-line">{done} מתוך {proc.tasks.length} משימות הושלמו</p>
+                          {proc.description && <p style={{ margin: '0 0 8px', maxWidth: '600px', lineHeight: 1.5, fontSize: '14px' }}>{proc.description}</p>}
+                          <p className="muted-line">{done} מתוך {procTasks.length} משימות הושלמו · {proc.topics.length} נושאים</p>
                         </div>
                         <div style={{ display: 'flex', gap: '8px', flexDirection: 'column', alignItems: 'flex-end' }}>
                           <button type="button" className="primary-button small-button" onClick={() => { setFilterDomain(domain.id); setView('dashboard') }}>מעבר למשימות</button>
                           <div style={{ display: 'flex', gap: '8px' }}>
-                            <button type="button" className="ghost-button small-button" onClick={() => openEditProcessModal(proc)}>עריכה</button>
+                            <button type="button" className="ghost-button small-button" onClick={() => { setProcessForm({ name: proc.name, description: proc.description || '', color: proc.color, milestones: proc.milestones || '', kpis: proc.kpis || '', stakeholders: proc.stakeholders || '', targetDate: proc.targetDate || '' }); setShowProcessModal({ mode: 'edit', process: proc }) }}>עריכה</button>
                             <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteProcess(proc.id)}>מחיקה</button>
                           </div>
                         </div>
@@ -1130,30 +1114,57 @@ function App() {
                         <span style={{ fontSize: '14px', fontWeight: 700, color: barColor, minWidth: '38px', textAlign: 'left' }}>{pct}%</span>
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginTop: '12px' }}>
-                        {proc.milestones && (
-                          <div style={{ background: 'rgba(59, 130, 246, 0.03)', padding: '12px', borderRadius: '12px', border: '1px solid var(--surface-border)' }}>
-                            <strong style={{ display: 'block', marginBottom: '8px', color: 'var(--primary)', fontSize: '13px' }}>🎯 אבני דרך</strong>
-                            <div style={{ whiteSpace: 'pre-wrap', fontSize: '13px', lineHeight: '1.4' }}>{proc.milestones}</div>
-                          </div>
-                        )}
-                        {(proc.kpis || proc.stakeholders || proc.targetDate) && (
-                          <div style={{ background: 'rgba(59, 130, 246, 0.03)', padding: '12px', borderRadius: '12px', border: '1px solid var(--surface-border)' }}>
-                            <strong style={{ display: 'block', marginBottom: '8px', color: 'var(--primary)', fontSize: '13px' }}>📋 מדדים ושותפים</strong>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                              {proc.targetDate && <div><strong>📅 יעד:</strong> {new Date(proc.targetDate).toLocaleDateString('he-IL')}</div>}
-                              {proc.kpis && <div><strong>📊 KPIs:</strong> {proc.kpis}</div>}
-                              {proc.stakeholders && <div><strong>👥 שותפים:</strong> {proc.stakeholders}</div>}
+                      {/* Topics list */}
+                      <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        {proc.topics.map((topic) => {
+                          const topicDone = topic.tasks.filter((t) => t.status === 'בוצע').length
+                          const topicPct = topic.tasks.length === 0 ? 0 : Math.round((topicDone / topic.tasks.length) * 100)
+                          return (
+                            <div key={topic.id} style={{ border: '1px solid var(--surface-border)', borderRadius: '12px', padding: '12px 16px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                                <span style={{ fontWeight: 700, fontSize: '14px', color: proc.color }}>📁 {topic.name}</span>
+                                <span className="task-count">{topic.tasks.length} משימות · {topicDone} הושלמו ({topicPct}%)</span>
+                                <div style={{ marginRight: 'auto', display: 'flex', gap: '6px' }}>
+                                  <button type="button" className="ghost-button small-button" onClick={() => setShowTopicModal({ processId: proc.id, topicId: topic.id, name: topic.name })}>שינוי שם</button>
+                                  <button type="button" className="ghost-button small-button" style={{ color: '#f87171' }} onClick={() => deleteTopic(proc.id, topic.id)}>מחיקה</button>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                {topic.tasks.map((t) => (
+                                  <span key={t.id} className={`status-pill ${STATUS_META[normalizeTaskStatus(t.status)].tone}`} style={{ cursor: 'default', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.title}>
+                                    {t.title}
+                                  </span>
+                                ))}
+                                {topic.tasks.length === 0 && <span className="muted-line" style={{ fontSize: '13px' }}>אין משימות בנושא זה.</span>}
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )
+                        })}
+                        <button type="button" className="ghost-button small-button" style={{ alignSelf: 'flex-start', borderStyle: 'dashed' }} onClick={() => setShowTopicModal({ processId: proc.id, name: '' })}>
+                          + נושא חדש
+                        </button>
                       </div>
 
-                      <div className="process-stats" style={{ marginTop: '12px' }}>
-                        <span>{proc.tasks.filter((t) => t.status === 'דחוף').length} דחופות</span>
-                        <span>{proc.tasks.filter((t) => t.status === 'ממתין').length} ממתינות</span>
-                        <span>{proc.tasks.filter((t) => t.owner === UNASSIGNED_OWNER).length} לא משויכות</span>
-                      </div>
+                      {(proc.milestones || proc.kpis || proc.stakeholders || proc.targetDate) && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px', marginTop: '16px' }}>
+                          {proc.milestones && (
+                            <div style={{ background: 'rgba(59,130,246,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--surface-border)' }}>
+                              <strong style={{ display: 'block', marginBottom: '6px', color: 'var(--primary)', fontSize: '13px' }}>🎯 אבני דרך</strong>
+                              <div style={{ whiteSpace: 'pre-wrap', fontSize: '13px', lineHeight: '1.4' }}>{proc.milestones}</div>
+                            </div>
+                          )}
+                          {(proc.kpis || proc.stakeholders || proc.targetDate) && (
+                            <div style={{ background: 'rgba(59,130,246,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--surface-border)' }}>
+                              <strong style={{ display: 'block', marginBottom: '6px', color: 'var(--primary)', fontSize: '13px' }}>📋 מדדים ושותפים</strong>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '13px' }}>
+                                {proc.targetDate && <div><strong>📅 יעד:</strong> {new Date(proc.targetDate).toLocaleDateString('he-IL')}</div>}
+                                {proc.kpis && <div><strong>📊 KPIs:</strong> {proc.kpis}</div>}
+                                {proc.stakeholders && <div><strong>👥 שותפים:</strong> {proc.stakeholders}</div>}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </section>
                   )
                 })}
@@ -1168,10 +1179,7 @@ function App() {
         <main className="board">
           <div className="integration-grid">
             <section className="panel google-panel">
-              <div className="section-head">
-                <h3>חיבור Google</h3>
-                <p>התחברות לחשבון לסנכרון עם Google Tasks ו-Google Calendar.</p>
-              </div>
+              <div className="section-head"><h3>חיבור Google</h3><p>התחברות לחשבון לסנכרון עם Google Tasks ו-Google Calendar.</p></div>
               {googleProfile ? (
                 <div className="google-connected">
                   <div className="google-user">
@@ -1182,34 +1190,22 @@ function App() {
                 </div>
               ) : GOOGLE_CLIENT_ID ? (
                 <div className="google-signin-wrap">
-                  <button type="button" className="primary-button" onClick={() => void connectGoogleProfile()} disabled={googleTasksBusy}>
-                    {googleTasksBusy ? 'טוען...' : 'התחברות עם Google'}
-                  </button>
+                  <button type="button" className="primary-button" onClick={() => void connectGoogleProfile()} disabled={googleTasksBusy}>{googleTasksBusy ? 'טוען...' : 'התחברות עם Google'}</button>
                 </div>
               ) : (
-                <div className="info-box">
-                  <strong>החיבור מוכן אבל חסר Client ID.</strong>
-                  <p>הוסף `VITE_GOOGLE_CLIENT_ID` ל-.env</p>
-                </div>
+                <div className="info-box"><strong>חסר Client ID.</strong><p>הוסף `VITE_GOOGLE_CLIENT_ID` ל-.env</p></div>
               )}
               {googleMessage && <p className="muted-line">{googleMessage}</p>}
             </section>
 
             <section className="panel microsoft-panel">
-              <div className="section-head">
-                <h3>סנכרון מיידי</h3>
-                <p>ייצוא משימות ישירות ל-Google Tasks.</p>
-              </div>
+              <div className="section-head"><h3>סנכרון מיידי</h3><p>ייצוא משימות ישירות ל-Google Tasks.</p></div>
               {googleProfile ? (
                 <div className="integration-stack">
                   <div className="microsoft-actions">
                     <select className="field-input compact" value={syncSourceId} onChange={(e) => setSyncSourceId(e.target.value)}>
-                      <optgroup label="תחומים">
-                        {domains.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                      </optgroup>
-                      <optgroup label="תהליכים">
-                        {processes.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                      </optgroup>
+                      <optgroup label="תחומים">{domains.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>
+                      <optgroup label="תהליכים">{processes.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</optgroup>
                     </select>
                     <select className="field-input compact" value={selectedGoogleTaskListId} onChange={(e) => setSelectedGoogleTaskListId(e.target.value)}>
                       <option value="">בחר רשימת Google Tasks</option>
@@ -1220,9 +1216,7 @@ function App() {
                     <button type="button" className="primary-button" onClick={() => void syncToGoogleTasks()} disabled={googleTasksBusy || !selectedGoogleTaskListId}>ייצוא</button>
                   </div>
                 </div>
-              ) : (
-                <div className="info-box"><strong>יש להתחבר קודם לגוגל.</strong></div>
-              )}
+              ) : <div className="info-box"><strong>יש להתחבר קודם לגוגל.</strong></div>}
               {selectedGoogleTaskList && <p className="muted-line">רשימה: {selectedGoogleTaskList.title}</p>}
             </section>
           </div>
@@ -1233,10 +1227,7 @@ function App() {
       {view === 'events' && (
         <main className="board">
           <section className="panel calendar-panel">
-            <div className="section-head">
-              <h3>יומן</h3>
-              <p>תצוגה שבועית עם אירועים מקומיים ו-Google Calendar.</p>
-            </div>
+            <div className="section-head"><h3>יומן</h3><p>תצוגה שבועית עם אירועים מקומיים ו-Google Calendar.</p></div>
             <div className="calendar-toolbar">
               <div className="mode-switch">
                 <button type="button" className={calendarMode === 'week' ? 'tab-button active' : 'tab-button'} onClick={() => setCalendarMode('week')}>שבועי</button>
@@ -1247,41 +1238,20 @@ function App() {
             <div className={calendarMode === 'day' ? 'calendar-grid calendar-grid-day' : 'calendar-grid'}>
               {calendarEntries.map((entry) => (
                 <article className="calendar-card" key={entry.date}>
-                  <div className="calendar-card-head">
-                    <h4>{entry.label}</h4>
-                    <span>{entry.date}</span>
-                  </div>
+                  <div className="calendar-card-head"><h4>{entry.label}</h4><span>{entry.date}</span></div>
                   {entry.events.length > 0 || entry.googleEvents.length > 0 ? (
                     <div className="calendar-events-wrap">
-                      {entry.events.map((item) => {
-                        const d = domains.find((dom) => dom.id === item.domainId)
-                        return (
-                          <div className="calendar-event" key={item.id}>
-                            <strong>{item.title}</strong>
-                            <span>{d?.name ?? 'ללא תחום'}</span>
-                          </div>
-                        )
-                      })}
-                      {entry.googleEvents.map((item) => (
-                        <div className="calendar-event" key={item.id} style={{ borderColor: '#4285F4', backgroundColor: 'rgba(66,133,244,0.1)' }}>
-                          <strong>📅 {item.summary}</strong>
-                          <span>Google Calendar</span>
-                        </div>
-                      ))}
+                      {entry.events.map((item) => <div className="calendar-event" key={item.id}><strong>{item.title}</strong><span>{domains.find((d) => d.id === item.domainId)?.name ?? 'ללא תחום'}</span></div>)}
+                      {entry.googleEvents.map((item) => <div className="calendar-event" key={item.id} style={{ borderColor: '#4285F4', backgroundColor: 'rgba(66,133,244,0.1)' }}><strong>📅 {item.summary}</strong><span>Google Calendar</span></div>)}
                     </div>
-                  ) : (
-                    <p className="muted-line">אין אירועים.</p>
-                  )}
+                  ) : <p className="muted-line">אין אירועים.</p>}
                 </article>
               ))}
             </div>
           </section>
-
           <div className="event-layout">
             <section className="panel">
-              <div className="section-head">
-                <h3>הוספת אירוע</h3>
-              </div>
+              <div className="section-head"><h3>הוספת אירוע</h3></div>
               <form className="event-form" onSubmit={handleEventSubmit}>
                 <input className="field-input" type="text" placeholder="שם האירוע" value={eventForm.title} onChange={(e) => setEventForm((c) => ({ ...c, title: e.target.value }))} />
                 <input className="field-input" type="date" value={eventForm.date} onChange={(e) => setEventForm((c) => ({ ...c, date: e.target.value }))} />
@@ -1300,17 +1270,11 @@ function App() {
       {view === 'activity' && (
         <main className="board">
           <section className="panel">
-            <div className="section-head">
-              <h3>יומן פעולות</h3>
-              <p>תיעוד אוטומטי של עריכות, אירועים וחיבורים.</p>
-            </div>
+            <div className="section-head"><h3>יומן פעולות</h3></div>
             <div className="stack-list">
               {activity.map((item) => (
                 <article className="list-card" key={item.id}>
-                  <div className="list-card-head">
-                    <h4>{item.action}</h4>
-                    <span>{item.createdAt}</span>
-                  </div>
+                  <div className="list-card-head"><h4>{item.action}</h4><span>{item.createdAt}</span></div>
                   <p>{item.details}</p>
                 </article>
               ))}
@@ -1325,20 +1289,20 @@ function App() {
       {/* ════════ MODAL: Add task / bulk ════════ */}
       {showGlobalAddModal && (
         <div className="modal-backdrop" role="presentation" onClick={() => setShowGlobalAddModal(false)}>
-          <section className="modal-card" role="dialog" aria-modal="true" aria-label="יצירת משימות" onClick={(e) => e.stopPropagation()}>
+          <section className="modal-card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <div className="section-head" style={{ marginBottom: '20px' }}>
               <div style={{ display: 'flex', gap: '16px', borderBottom: '1px solid var(--surface-border)', paddingBottom: '16px', flexWrap: 'wrap' }}>
                 <button type="button" className={showGlobalAddModal === 'single' ? 'tab-button active' : 'tab-button'} onClick={() => setShowGlobalAddModal('single')}>משימה בודדת</button>
                 <button type="button" className={showGlobalAddModal === 'bulk' ? 'tab-button active' : 'tab-button'} onClick={() => setShowGlobalAddModal('bulk')}>ייבוא חכם</button>
-                <button type="button" className="tab-button" style={{ color: 'var(--primary)', fontWeight: 600 }} onClick={() => { setShowGlobalAddModal(false); openCreateProcessModal(domains[0]?.id) }}>+ תהליך חדש</button>
+                <button type="button" className="tab-button" style={{ color: 'var(--primary)', fontWeight: 600 }} onClick={() => { setShowGlobalAddModal(false); setProcessForm({ name: '', description: '', color: '#3b82f6', milestones: '', kpis: '', stakeholders: '', targetDate: '' }); setShowProcessModal({ mode: 'create', domainId: domains[0]?.id }) }}>+ תהליך חדש</button>
               </div>
             </div>
 
             {showGlobalAddModal === 'single' ? (
-              <form className="event-form" onSubmit={(e) => { handleTaskSubmit(e); setShowGlobalAddModal(false) }}>
+              <form className="event-form" onSubmit={(e) => { handleTaskSubmit(e); if (taskForm.title.trim() && taskForm.dueDate) setShowGlobalAddModal(false) }}>
                 <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
                   <span>שם המשימה</span>
-                  <input className="field-input" type="text" placeholder="שם המשימה" required value={taskForm.title} onChange={(e) => setTaskForm((c) => ({ ...c, title: e.target.value }))} />
+                  <input className="field-input" type="text" required value={taskForm.title} onChange={(e) => setTaskForm((c) => ({ ...c, title: e.target.value }))} />
                 </label>
                 <label className="toolbar-field">
                   <span>תאריך יעד</span>
@@ -1346,17 +1310,32 @@ function App() {
                 </label>
                 <label className="toolbar-field">
                   <span>תחום</span>
-                  <select className="field-input" value={taskForm.domainId} onChange={(e) => setTaskForm((c) => ({ ...c, domainId: e.target.value, processId: '' }))}>
+                  <select className="field-input" value={taskForm.domainId} onChange={(e) => setTaskForm((c) => ({ ...c, domainId: e.target.value, processId: '', topicId: '' }))}>
                     {domains.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                   </select>
                 </label>
-                <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
+                <label className="toolbar-field">
                   <span>תהליך (לא חובה)</span>
-                  <select className="field-input" value={taskForm.processId} onChange={(e) => setTaskForm((c) => ({ ...c, processId: e.target.value }))}>
-                    <option value="">— ללא תהליך (ישיר לתחום) —</option>
+                  <select className="field-input" value={taskForm.processId} onChange={(e) => setTaskForm((c) => ({ ...c, processId: e.target.value, topicId: '' }))}>
+                    <option value="">— ישיר לתחום —</option>
                     {processes.filter((p) => p.domainId === taskForm.domainId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </label>
+                {taskForm.processId && (
+                  <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
+                    <span>נושא בתהליך</span>
+                    <select className="field-input" value={taskForm.topicId} onChange={(e) => setTaskForm((c) => ({ ...c, topicId: e.target.value, newTopicName: '' }))}>
+                      <option value="">— נושא חדש —</option>
+                      {processes.find((p) => p.id === taskForm.processId)?.topics.map((tp) => <option key={tp.id} value={tp.id}>{tp.name}</option>)}
+                    </select>
+                  </label>
+                )}
+                {taskForm.processId && !taskForm.topicId && (
+                  <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
+                    <span>שם נושא חדש</span>
+                    <input className="field-input" type="text" placeholder="לדוגמה: מיתוג, לוגיסטיקה..." value={taskForm.newTopicName} onChange={(e) => setTaskForm((c) => ({ ...c, newTopicName: e.target.value }))} />
+                  </label>
+                )}
                 <label className="toolbar-field">
                   <span>סטטוס</span>
                   <select className="field-input" value={taskForm.status} onChange={(e) => setTaskForm((c) => ({ ...c, status: e.target.value as TaskStatus }))}>
@@ -1374,19 +1353,28 @@ function App() {
                   <span>הדבק טקסט חופשי — כל שורה תהיה משימה</span>
                   <textarea className="field-input field-textarea" placeholder="- משימה א׳&#10;- משימה ב׳" value={bulkImportText} onChange={(e) => setBulkImportText(e.target.value)} style={{ minHeight: '180px' }} required />
                 </div>
-                <div className="toolbar-field">
+                <label className="toolbar-field">
                   <span>תחום</span>
-                  <select className="field-input" value={bulkDomainId || domains[0]?.id || ''} onChange={(e) => { setBulkDomainId(e.target.value); setBulkProcessId('') }}>
+                  <select className="field-input" value={bulkDomainId || domains[0]?.id} onChange={(e) => { setBulkDomainId(e.target.value); setBulkProcessId(''); setBulkTopicId('') }}>
                     {domains.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                   </select>
-                </div>
-                <div className="toolbar-field">
+                </label>
+                <label className="toolbar-field">
                   <span>תהליך (לא חובה)</span>
-                  <select className="field-input" value={bulkProcessId} onChange={(e) => setBulkProcessId(e.target.value)}>
-                    <option value="">— ללא תהליך —</option>
+                  <select className="field-input" value={bulkProcessId} onChange={(e) => { setBulkProcessId(e.target.value); setBulkTopicId('') }}>
+                    <option value="">— ישיר לתחום —</option>
                     {processes.filter((p) => p.domainId === (bulkDomainId || domains[0]?.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
-                </div>
+                </label>
+                {bulkProcessId && (
+                  <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
+                    <span>נושא</span>
+                    <select className="field-input" value={bulkTopicId} onChange={(e) => setBulkTopicId(e.target.value)}>
+                      <option value="">— נושא ראשון —</option>
+                      {processes.find((p) => p.id === bulkProcessId)?.topics.map((tp) => <option key={tp.id} value={tp.id}>{tp.name}</option>)}
+                    </select>
+                  </label>
+                )}
                 <div className="modal-actions" style={{ gridColumn: '1 / -1' }}>
                   <button type="button" className="ghost-button" onClick={() => setShowGlobalAddModal(false)}>ביטול</button>
                   <button type="submit" className="primary-button" disabled={!bulkImportText.trim()}>ייבוא</button>
@@ -1400,10 +1388,8 @@ function App() {
       {/* ════════ MODAL: Edit task ════════ */}
       {editingTask && (
         <div className="modal-backdrop" role="presentation" onClick={() => setEditingTask(null)}>
-          <section className="modal-card" role="dialog" aria-modal="true" aria-label="עריכת משימה" onClick={(e) => e.stopPropagation()}>
-            <div className="section-head">
-              <h3>עריכת משימה</h3>
-            </div>
+          <section className="modal-card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="section-head"><h3>עריכת משימה</h3></div>
             <form className="event-form" onSubmit={saveTaskEdits}>
               <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
                 <span>כותרת</span>
@@ -1423,13 +1409,14 @@ function App() {
                   {STATUS_ORDER.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </label>
-              <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
-                <span>שיוך לתהליך (לא חובה)</span>
-                <select className="field-input" value={editingTask.newProcessId} onChange={(e) => setEditingTask((c) => c ? { ...c, newProcessId: e.target.value } : c)}>
-                  <option value="">— ללא תהליך (ישיר לתחום) —</option>
-                  {processes.filter((p) => p.domainId === editingTask.domainId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </label>
+              {editingTask.processId && (
+                <label className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
+                  <span>העברה לנושא אחר</span>
+                  <select className="field-input" value={editingTask.newTopicId} onChange={(e) => setEditingTask((c) => c ? { ...c, newTopicId: e.target.value } : c)}>
+                    {processes.find((p) => p.id === editingTask.processId)?.topics.map((tp) => <option key={tp.id} value={tp.id}>{tp.name}</option>)}
+                  </select>
+                </label>
+              )}
               <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
                 <span>הערות</span>
                 <textarea className="field-input field-textarea" style={{ minHeight: '80px' }} placeholder="הערות שוטפות..." value={editingTask.notes || ''} onChange={(e) => setEditingTask((c) => c ? { ...c, notes: e.target.value } : c)} />
@@ -1447,44 +1434,28 @@ function App() {
       {/* ════════ MODAL: Process ════════ */}
       {showProcessModal && (
         <div className="modal-backdrop" role="presentation" onClick={() => setShowProcessModal(null)}>
-          <section className="modal-card" role="dialog" aria-modal="true" aria-label="ניהול תהליך" onClick={(e) => e.stopPropagation()}>
-            <div className="section-head">
-              <h3>{showProcessModal.mode === 'create' ? 'יצירת תהליך חדש' : 'עריכת תהליך'}</h3>
-              {showProcessModal.mode === 'create' && (
-                <p>
-                  {domains.find((d) => d.id === showProcessModal.domainId)?.name}
-                  {' '}
-                  <select
-                    className="field-input compact"
-                    style={{ display: 'inline-block', width: 'auto', marginRight: '4px' }}
-                    value={showProcessModal.domainId}
-                    onChange={(e) => setShowProcessModal({ mode: 'create', domainId: e.target.value })}
-                  >
-                    {domains.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                  </select>
-                </p>
-              )}
-            </div>
+          <section className="modal-card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="section-head"><h3>{showProcessModal.mode === 'create' ? 'יצירת תהליך חדש' : 'עריכת תהליך'}</h3></div>
             <form className="event-form" onSubmit={handleProcessSubmit}>
               <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
                 <span>שם התהליך</span>
-                <input className="field-input" type="text" required placeholder="שם התהליך" value={processForm.name} onChange={(e) => setProcessForm({ ...processForm, name: e.target.value })} />
+                <input className="field-input" type="text" required value={processForm.name} onChange={(e) => setProcessForm({ ...processForm, name: e.target.value })} />
               </div>
               <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
                 <span>מטרות ואסטרטגיה</span>
-                <textarea className="field-input field-textarea" placeholder="פירוט..." value={processForm.description} onChange={(e) => setProcessForm({ ...processForm, description: e.target.value })} />
+                <textarea className="field-input field-textarea" value={processForm.description} onChange={(e) => setProcessForm({ ...processForm, description: e.target.value })} />
               </div>
               <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
                 <span>אבני דרך</span>
-                <textarea className="field-input field-textarea" style={{ minHeight: '60px' }} placeholder="אבני דרך..." value={processForm.milestones} onChange={(e) => setProcessForm({ ...processForm, milestones: e.target.value })} />
+                <textarea className="field-input field-textarea" style={{ minHeight: '60px' }} value={processForm.milestones} onChange={(e) => setProcessForm({ ...processForm, milestones: e.target.value })} />
               </div>
               <div className="toolbar-field">
                 <span>KPIs</span>
-                <input className="field-input" type="text" placeholder="מדדים..." value={processForm.kpis} onChange={(e) => setProcessForm({ ...processForm, kpis: e.target.value })} />
+                <input className="field-input" type="text" value={processForm.kpis} onChange={(e) => setProcessForm({ ...processForm, kpis: e.target.value })} />
               </div>
               <div className="toolbar-field">
                 <span>שותפים</span>
-                <input className="field-input" type="text" placeholder="גורמים..." value={processForm.stakeholders} onChange={(e) => setProcessForm({ ...processForm, stakeholders: e.target.value })} />
+                <input className="field-input" type="text" value={processForm.stakeholders} onChange={(e) => setProcessForm({ ...processForm, stakeholders: e.target.value })} />
               </div>
               <div className="toolbar-field">
                 <span>תאריך יעד</span>
@@ -1497,6 +1468,34 @@ function App() {
               <div className="modal-actions" style={{ gridColumn: '1 / -1' }}>
                 <button type="button" className="ghost-button" onClick={() => setShowProcessModal(null)}>ביטול</button>
                 <button type="submit" className="primary-button">{showProcessModal.mode === 'create' ? 'יצירת תהליך' : 'שמירת שינויים'}</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {/* ════════ MODAL: Topic ════════ */}
+      {showTopicModal && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setShowTopicModal(null)}>
+          <section className="modal-card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '420px' }}>
+            <div className="section-head"><h3>{showTopicModal.topicId ? 'שינוי שם נושא' : 'נושא חדש'}</h3></div>
+            <form className="event-form" onSubmit={(e) => {
+              e.preventDefault()
+              if (!showTopicModal.name.trim()) return
+              if (showTopicModal.topicId) {
+                renameTopic(showTopicModal.processId, showTopicModal.topicId, showTopicModal.name.trim())
+              } else {
+                addTopic(showTopicModal.processId, showTopicModal.name.trim())
+              }
+              setShowTopicModal(null)
+            }}>
+              <div className="toolbar-field" style={{ gridColumn: '1 / -1' }}>
+                <span>שם הנושא</span>
+                <input className="field-input" type="text" required autoFocus placeholder="לדוגמה: מיתוג, לוגיסטיקה..." value={showTopicModal.name} onChange={(e) => setShowTopicModal((c) => c ? { ...c, name: e.target.value } : c)} />
+              </div>
+              <div className="modal-actions" style={{ gridColumn: '1 / -1' }}>
+                <button type="button" className="ghost-button" onClick={() => setShowTopicModal(null)}>ביטול</button>
+                <button type="submit" className="primary-button">{showTopicModal.topicId ? 'שמירה' : 'יצירת נושא'}</button>
               </div>
             </form>
           </section>
